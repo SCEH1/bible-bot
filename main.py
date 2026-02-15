@@ -128,13 +128,28 @@ def send_smart_split(chat_id, text):
 def welcome(message):
     bot.send_message(
         message.chat.id, 
-        "🕊 Бот для глубокого библейского разбора готов к работе!\n\nПришли мне библейский текст или ссылку на отрывок.",
+        "🕊 Бот для глубокого библейского разбора готов к работе!\n\nПришли мне библейский текст или ссылку на отрывок (например: 'Римлянам 5:1' или полный текст).",
         parse_mode='HTML'
     )
 
 @bot.message_handler(func=lambda message: True)
 def handle_message(message):
     chat_id = message.chat.id
+    text = message.text.strip()
+    
+    # ✅ ФИЛЬТР: игнорируем короткие сообщения без библейских ссылок
+    # Проверяем: есть ли цифра + двоеточие (признак ссылки на стих) ИЛИ текст длинный
+    has_bible_reference = any(char.isdigit() for char in text) and ':' in text
+    is_long_text = len(text) >= 30
+    
+    if not has_bible_reference and not is_long_text:
+        bot.send_message(
+            chat_id, 
+            "Пришли мне библейский текст или ссылку на отрывок для разбора.\n\nНапример: <b>Римлянам 5:1</b> или полный текст стиха.",
+            parse_mode='HTML'
+        )
+        return
+    
     bot.send_chat_action(chat_id, 'typing')
 
     try:
@@ -145,7 +160,7 @@ def handle_message(message):
                 "model": MODEL_NAME, 
                 "messages": [
                     {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": message.text}
+                    {"role": "user", "content": text}
                 ], 
                 "temperature": 0.7,
                 "max_tokens": 4000
