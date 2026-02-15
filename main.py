@@ -3,7 +3,7 @@ from telebot import types
 import requests
 import os
 import time
-from keep_alive import keep_alive
+from flask import Flask, request
 
 # ================= НАСТРОЙКИ =================
 TG_TOKEN = os.environ.get("TG_TOKEN")
@@ -65,18 +65,24 @@ def handle_message(message):
         bot.send_message(chat_id, f"Произошла ошибка: {str(e)}")
 
 if __name__ == "__main__":
-    keep_alive()
+    app = Flask(__name__)
     
-    # 1. Сбрасываем старые настройки (вебхуки)
+    @app.route("/" + TG_TOKEN, methods=["POST"])
+    def webhook():
+        json_str = request.get_data().decode("UTF-8")
+        update = telebot.types.Update.de_json(json_str)
+        bot.process_new_updates([update])
+        return "", 200
+    
+    @app.route("/")
+    def index():
+        return "Bot is running!", 200
+    
+    # Устанавливаем webhook
     bot.remove_webhook()
+    WEBHOOK_URL = f"https://bible-bot-ssx4.onrender.com/{TG_TOKEN}"
+    bot.set_webhook(url=WEBHOOK_URL)
+    print(f"Webhook установлен: {WEBHOOK_URL}")
     
-    # 2. РУЧНАЯ ОЧИСТКА: говорим Telegram, что мы «прочитали» все старые сообщения
-    # Это заменяет drop_pending_updates и лечит ошибку 409
-    try:
-        bot.get_updates(offset=-1)
-    except:
-        pass
-        
-    print("--- БОТ ЗАПУЩЕН БЕЗ ОШИБОК ---")
-    # 3. Запуск без лишних аргументов, чтобы не было TypeError
-    bot.infinity_polling(timeout=60, long_polling_timeout=30)
+    # Запускаем Flask
+    app.run(host="0.0.0.0", port=8080)
