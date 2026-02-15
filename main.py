@@ -12,6 +12,9 @@ MODEL_NAME = "gemini-2.5-flash-lite"
 
 bot = telebot.TeleBot(TG_TOKEN)
 
+# Список обработанных update_id для защиты от дубликатов
+processed_updates = set()
+
 SYSTEM_PROMPT = """Ты - библейский исследователь и пастор с глубокими знаниями Писания, теологии, греческого и еврейского языков.
 
 Твоя задача - делать глубокий экзегетический разбор библейских текстов по строгой структуре из 8 пунктов.
@@ -102,8 +105,8 @@ BIBLE_BOOKS = [
 ]
 
 def send_smart_split(chat_id, text):
-    """Умная разбивка длинных сообщений по логическим блокам"""
-    max_length = 4000
+    """Умная разбивка длинных сообщений по логическим блокам (макс 4096 символов)"""
+    max_length = 4000  # Оставляем запас
     
     if len(text) <= max_length:
         bot.send_message(chat_id, text, parse_mode='HTML')
@@ -121,6 +124,7 @@ def send_smart_split(chat_id, text):
                 parts.append(current_part.strip())
                 current_part = line + '\n'
             else:
+                # Если одна строка больше лимита - разбиваем по предложениям
                 sentences = line.split('. ')
                 for sentence in sentences:
                     if len(current_part) + len(sentence) + 2 > max_length:
@@ -135,6 +139,7 @@ def send_smart_split(chat_id, text):
     if current_part:
         parts.append(current_part.strip())
     
+    # Отправляем все части
     for part in parts:
         bot.send_message(chat_id, part, parse_mode='HTML')
         time.sleep(0.5)
@@ -205,6 +210,17 @@ if __name__ == "__main__":
     def webhook():
         json_str = request.get_data().decode("UTF-8")
         update = telebot.types.Update.de_json(json_str)
+        
+        # ✅ АНТИДУБЛИКАТ: проверяем, не обрабатывали ли мы этот update_id
+        if update.update_id in processed_updates:
+            return "", 200
+        
+        # Добавляем в обработанные
+        processed_updates.add(update.update_id)
+        
+        # Ограничиваем размер set (храним последние 1000)
+        if len(processed_updates) > 1000:
+            processed_updates.clear()
         
         # ✅ ФИЛЬТР: только текстовые сообщения пользователя
         if not update.message or not update.message.text:
