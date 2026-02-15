@@ -14,7 +14,7 @@ MODEL_NAME = "gemini-2.5-flash-lite"
 bot = telebot.TeleBot(TG_TOKEN)
 
 SYSTEM_PROMPT = """Ты — библейский исследователь и пастор. 
-Сделай глубокий разбор текста по 8 пунктам. Используй EMOJI."""
+Сделай глубокий разбор текста по 8 пунктам. Используй только эмодзи для выделения пунктов, но НЕ используй звездочки, подчеркивания или любую другую markdown-разметку в тексте."""
 
 def get_main_keyboard():
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
