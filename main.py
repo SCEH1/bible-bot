@@ -8,7 +8,7 @@ from flask import Flask, request
 # ================= НАСТРОЙКИ =================
 TG_TOKEN = os.environ.get("TG_TOKEN")
 NEURO_KEY = os.environ.get("NEURO_KEY")
-MODEL_NAME = "gemini-2.5-lite"
+MODEL_NAME = "gemini-2.5-flash-lite"
 # =============================================
 
 bot = telebot.TeleBot(TG_TOKEN)
