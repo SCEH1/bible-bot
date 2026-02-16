@@ -23,8 +23,8 @@ logger = logging.getLogger(__name__)
 # ================= ИНИЦИАЛИЗАЦИЯ =================
 bot = telebot.TeleBot(TG_TOKEN)
 processed_updates = deque(maxlen=1000)
-pending_messages = {}  # {chat_id: message_id} для удаления "Делаю разбор..."
-last_verse = {}  # {chat_id: текст стиха} для кнопки "Разобрать"
+pending_messages = {}
+last_verse = {}
 
 # ================= ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ =================
 
@@ -79,8 +79,7 @@ def is_bible_reference(text):
     return has_reference or is_long
 
 def do_parse(chat_id, verse_text):
-    """✅ Универсальная функция разбора с удалением 'Делаю разбор...'"""
-    # Отправляем "Делаю разбор..." и сохраняем ID
+    """✅ Универсальная функция разбора"""
     msg = bot.send_message(chat_id, "🔍 <b>Делаю разбор...</b>", parse_mode='HTML')
     pending_messages[chat_id] = msg.message_id
     bot.send_chat_action(chat_id, 'typing')
@@ -105,7 +104,6 @@ def do_parse(chat_id, verse_text):
             if response.status_code == 200:
                 ans = response.json()['choices'][0]['message']['content'].strip()
                 
-                # ✅ УДАЛЯЕМ "Делаю разбор..."
                 if chat_id in pending_messages:
                     try:
                         bot.delete_message(chat_id, pending_messages[chat_id])
@@ -125,7 +123,6 @@ def do_parse(chat_id, verse_text):
         if attempt < 2:
             time.sleep(2 ** attempt)
     
-    # ✅ Удаляем "Делаю разбор..." при ошибке
     if chat_id in pending_messages:
         try:
             bot.delete_message(chat_id, pending_messages[chat_id])
@@ -136,7 +133,7 @@ def do_parse(chat_id, verse_text):
     bot.send_message(chat_id, "❌ Ошибка разбора. Попробуй позже!", reply_markup=get_main_keyboard())
     return False
 
-# ================= ОБРАБОТЧИКИ СООБЩЕНИЙ =================
+# ================= ОБРАБОТЧИКИ =================
 
 @bot.message_handler(commands=['start'])
 def welcome(message):
@@ -158,9 +155,8 @@ def handle_message(message):
     chat_id = message.chat.id
     text = message.text.strip()
     
-    logger.info(f"Сообщение от {chat_id}: '{text[:50]}'")
+    logger.info(f"Сообщение: '{text[:50]}'")
     
-    # ✅ КНОПКА "СТИХ ДНЯ" - только показать стих
     if text == "📖 Стих дня":
         verse = get_random_verse()
         last_verse[chat_id] = verse
@@ -177,7 +173,6 @@ def handle_message(message):
         )
         return
     
-    # ✅ ФИЛЬТР БИБЛЕЙСКИХ ТЕКСТОВ
     if not is_bible_reference(text):
         markup = get_main_keyboard()
         bot.send_message(
@@ -191,20 +186,14 @@ def handle_message(message):
         )
         return
     
-    # ✅ РАЗБОР ПРЯМОЙ ССЫЛКИ
     do_parse(chat_id, text)
-
-# ================= ОБРАБОТЧИК INLINE КНОПОК =================
 
 @bot.callback_query_handler(func=lambda call: True)
 def callback_handler(call):
     chat_id = call.message.chat.id
-    
-    # ✅ Отвечаем на callback (убирает "часики")
     bot.answer_callback_query(call.id)
     
     if call.data == "new":
-        # Новый стих
         verse = get_random_verse()
         last_verse[chat_id] = verse
         
@@ -221,10 +210,9 @@ def callback_handler(call):
                 reply_markup=markup
             )
         except Exception as e:
-            logger.error(f"Ошибка edit_message: {e}")
+            logger.error(f"Ошибка edit: {e}")
     
     elif call.data == "parse":
-        # Разбор последнего стиха
         if chat_id in last_verse:
             do_parse(chat_id, last_verse[chat_id])
         else:
@@ -256,12 +244,10 @@ if __name__ == "__main__":
     def index():
         return "🕊 Bible Bot v2.0 - Ready!", 200
     
-    # Устанавливаем webhook
     bot.remove_webhook()
     WEBHOOK_URL = f"https://bible-bot-ssx4.onrender.com/{TG_TOKEN}"
     bot.set_webhook(url=WEBHOOK_URL)
-    logger.info(f"🚀 Webhook установлен: {WEBHOOK_URL}")
-    logger.info(f"📚 База стихов: {len(POPULAR_VERSES)} стихов")
+    logger.info(f"🚀 Webhook: {WEBHOOK_URL}")
+    logger.info(f"📚 База: {len(POPULAR_VERSES)} стихов")
     
-    # Запускаем Flask
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
