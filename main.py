@@ -1,4 +1,5 @@
 import telebot
+from telebot import types
 import requests
 import os
 import time
@@ -146,10 +147,13 @@ def send_smart_split(chat_id, text):
 
 @bot.message_handler(commands=['start'])
 def welcome(message):
+    # Убираем старую клавиатуру (если была)
+    remove_kb = types.ReplyKeyboardRemove()
     bot.send_message(
         message.chat.id, 
         "🕊 Бот для глубокого библейского разбора готов к работе!\n\nПришли мне библейский текст или ссылку на отрывок (например: <b>Римлянам 5:1</b> или полный текст стиха).",
-        parse_mode='HTML'
+        parse_mode='HTML',
+        reply_markup=remove_kb
     )
 
 @bot.message_handler(func=lambda message: True)
