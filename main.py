@@ -21,6 +21,11 @@ logger = logging.getLogger(__name__)
 bot = telebot.TeleBot(TG_TOKEN)
 processed_updates = deque(maxlen=1000)
 
+# ✅ Хранилище для удаления "Делаю разбор..."
+pending_messages = {}  # {chat_id: message_id}
+# ✅ Хранилище последнего стиха для разбора
+last_verse = {}  # {chat_id: "текст стиха"}
+
 SYSTEM_PROMPT = """Ты - библейский исследователь и пастор с глубокими знаниями Писания, теологии, греческого и еврейского языков.
 
 Твоя задача - делать глубокий экзегетический разбор библейских текстов по строгой структуре из 8 пунктов.
@@ -95,7 +100,7 @@ SYSTEM_PROMPT = """Ты - библейский исследователь и п�
 - Пункт 8: обязательно призыв к молитве/рассуждению
 - ПЕРВАЯ СТРОКА ТВОЕГО ОТВЕТА - это эмодзи и "1. КОНТЕКСТ И АВТОРСТВО"""
 
-# ✅ ЛОКАЛЬНАЯ БАЗА 50+ СТИХОВ
+# ✅ ЛОКАЛЬНАЯ БАЗА СТИХОВ - 50+ популярных
 POPULAR_VERSES = {
     "Бытие 1:1": "В начале сотворил Бог небо и землю.",
     "Бытие 1:27": "И сотворил Бог человека по образу Своему, по образу Божию сотворил его; мужчину и женщину сотворил их.",
@@ -213,8 +218,65 @@ def is_bible_reference(text):
     bible_pattern = r'\b(' + '|'.join(BIBLE_BOOKS) + r')\b.*?\s*(\d+)[.:](\d+)'
     has_reference = bool(re.search(bible_pattern, text_lower))
     is_long = len(text) >= 50
-    logger.info(f"Фильтр: ref={has_reference}, long={is_long}")
     return has_reference or is_long
+
+def do_parse(chat_id, verse_text):
+    """✅ Универсальная функция разбора"""
+    # Отправляем "Делаю разбор..." и сохраняем ID
+    msg = bot.send_message(chat_id, "🔍 <b>Делаю разбор...</b>", parse_mode='HTML')
+    pending_messages[chat_id] = msg.message_id
+    bot.send_chat_action(chat_id, 'typing')
+    
+    for attempt in range(3):
+        try:
+            response = requests.post(
+                "https://neuroapi.host/v1/chat/completions",
+                headers={"Authorization": f"Bearer {NEURO_KEY}"},
+                json={
+                    "model": MODEL_NAME,
+                    "messages": [
+                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {"role": "user", "content": verse_text}
+                    ],
+                    "temperature": 0.7,
+                    "max_tokens": 4000
+                },
+                timeout=50
+            )
+            
+            if response.status_code == 200:
+                ans = response.json()['choices'][0]['message']['content'].strip()
+                
+                # ✅ УДАЛЯЕМ "Делаю разбор..."
+                if chat_id in pending_messages:
+                    try:
+                        bot.delete_message(chat_id, pending_messages[chat_id])
+                    except:
+                        pass
+                    del pending_messages[chat_id]
+                
+                send_smart_split(chat_id, ans)
+                logger.info("✅ Разбор готов")
+                return True
+            else:
+                logger.warning(f"API {response.status_code}")
+                
+        except Exception as e:
+            logger.error(f"Попытка {attempt + 1}: {e}")
+        
+        if attempt < 2:
+            time.sleep(2 ** attempt)
+    
+    # ✅ Удаляем "Делаю разбор..." при ошибке
+    if chat_id in pending_messages:
+        try:
+            bot.delete_message(chat_id, pending_messages[chat_id])
+        except:
+            pass
+        del pending_messages[chat_id]
+    
+    bot.send_message(chat_id, "❌ Ошибка разбора. Попробуй позже!", reply_markup=get_main_keyboard())
+    return False
 
 @bot.message_handler(commands=['start'])
 def welcome(message):
@@ -240,9 +302,11 @@ def handle_message(message):
     # ✅ КНОПКА "СТИХ ДНЯ" - только показать стих
     if text == "📖 Стих дня":
         verse = get_random_verse()
+        last_verse[chat_id] = verse  # Сохраняем для кнопки "Разобрать"
+        
         markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("🔍 Разобрать", callback_data="parse_last"))
-        markup.add(types.InlineKeyboardButton("🎲 Другой стих", callback_data="new_verse"))
+        markup.row(types.InlineKeyboardButton("🔍 Разобрать", callback_data="parse"))
+        markup.row(types.InlineKeyboardButton("🎲 Другой стих", callback_data="new"))
         
         bot.send_message(
             chat_id,
@@ -266,53 +330,25 @@ def handle_message(message):
         )
         return
     
-    # ✅ РАЗБОР С RETRY
-    bot.send_message(chat_id, "🔍 <b>Делаю разбор...</b>", parse_mode='HTML')
-    bot.send_chat_action(chat_id, 'typing')
-    
-    for attempt in range(3):
-        try:
-            response = requests.post(
-                "https://neuroapi.host/v1/chat/completions",
-                headers={"Authorization": f"Bearer {NEURO_KEY}"},
-                json={
-                    "model": MODEL_NAME,
-                    "messages": [
-                        {"role": "system", "content": SYSTEM_PROMPT},
-                        {"role": "user", "content": text}
-                    ],
-                    "temperature": 0.7,
-                    "max_tokens": 4000
-                },
-                timeout=50
-            )
-            
-            if response.status_code == 200:
-                ans = response.json()['choices'][0]['message']['content'].strip()
-                send_smart_split(chat_id, ans)
-                logger.info("✅ Разбор готов")
-                return
-            else:
-                logger.warning(f"API {response.status_code}")
-                
-        except Exception as e:
-            logger.error(f"Попытка {attempt + 1}: {e}")
-        
-        if attempt < 2:
-            time.sleep(2 ** attempt)
-    
-    bot.send_message(chat_id, "❌ Ошибка разбора. Попробуй позже!", reply_markup=get_main_keyboard())
+    # ✅ РАЗБОР ПРЯМОЙ ССЫЛКИ
+    do_parse(chat_id, text)
 
-# ✅ ОБРАБОТЧИК КНОПОК
+# ✅ ОБРАБОТЧИК INLINE КНОПОК
 @bot.callback_query_handler(func=lambda call: True)
 def callback_handler(call):
     chat_id = call.message.chat.id
     
-    if call.data == "new_verse":
+    # ✅ Отвечаем на callback (убирает "часики")
+    bot.answer_callback_query(call.id)
+    
+    if call.data == "new":
+        # Новый стих
         verse = get_random_verse()
+        last_verse[chat_id] = verse
+        
         markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("🔍 Разобрать", callback_data="parse_last"))
-        markup.add(types.InlineKeyboardButton("🎲 Другой стих", callback_data="new_verse"))
+        markup.row(types.InlineKeyboardButton("🔍 Разобрать", callback_data="parse"))
+        markup.row(types.InlineKeyboardButton("🎲 Другой стих", callback_data="new"))
         
         bot.edit_message_text(
             f"📖 <b>Стих дня:</b>\n\n{verse}",
@@ -322,38 +358,12 @@ def callback_handler(call):
             reply_markup=markup
         )
     
-    elif call.data == "parse_last":
-        # Берём текст из сообщения (убираем "📖 Стих дня:")
-        full_text = call.message.text
-        verse_text = full_text.replace("📖 Стих дня:", "").strip()
-        
-        bot.send_message(chat_id, "🔍 <b>Делаю разбор...</b>", parse_mode='HTML')
-        bot.send_chat_action(chat_id, 'typing')
-        
-        try:
-            response = requests.post(
-                "https://neuroapi.host/v1/chat/completions",
-                headers={"Authorization": f"Bearer {NEURO_KEY}"},
-                json={
-                    "model": MODEL_NAME,
-                    "messages": [
-                        {"role": "system", "content": SYSTEM_PROMPT},
-                        {"role": "user", "content": verse_text}
-                    ],
-                    "temperature": 0.7,
-                    "max_tokens": 4000
-                },
-                timeout=50
-            )
-            
-            if response.status_code == 200:
-                ans = response.json()['choices'][0]['message']['content'].strip()
-                send_smart_split(chat_id, ans)
-            else:
-                bot.send_message(chat_id, "❌ Ошибка API")
-        except Exception as e:
-            logger.error(f"Ошибка разбора: {e}")
-            bot.send_message(chat_id, "❌ Ошибка. Попробуй позже!")
+    elif call.data == "parse":
+        # Разбор последнего стиха
+        if chat_id in last_verse:
+            do_parse(chat_id, last_verse[chat_id])
+        else:
+            bot.send_message(chat_id, "❌ Стих не найден. Нажми <b>📖 Стих дня</b>", parse_mode='HTML')
 
 if __name__ == "__main__":
     app = Flask(__name__)
@@ -369,9 +379,7 @@ if __name__ == "__main__":
             
             processed_updates.append(update.update_id)
             
-            if not update.message or not update.message.text:
-                return "", 200
-            
+            # ✅ Обрабатываем и сообщения, и callback_query
             bot.process_new_updates([update])
             return "", 200
             
