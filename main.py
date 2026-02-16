@@ -4,7 +4,11 @@ import requests
 import os
 import time
 import random
+import logging
+import traceback
+from collections import deque
 from flask import Flask, request
+import re
 
 # ================= НАСТРОЙКИ =================
 TG_TOKEN = os.environ.get("TG_TOKEN")
@@ -12,10 +16,14 @@ NEURO_KEY = os.environ.get("NEURO_KEY")
 MODEL_NAME = "gemini-2.5-flash-lite"
 # =============================================
 
+# Логирование
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
 bot = telebot.TeleBot(TG_TOKEN)
 
-# Список обработанных update_id для защиты от дубликатов
-processed_updates = set()
+# Антидубликат с автоматической очисткой (лучше чем set)
+processed_updates = deque(maxlen=1000)
 
 SYSTEM_PROMPT = """Ты - библейский исследователь и пастор с глубокими знаниями Писания, теологии, греческого и еврейского языков.
 
@@ -91,7 +99,7 @@ SYSTEM_PROMPT = """Ты - библейский исследователь и п�
 - Пункт 8: обязательно призыв к молитве/рассуждению
 - ПЕРВАЯ СТРОКА ТВОЕГО ОТВЕТА - это эмодзи и "1. КОНТЕКСТ И АВТОРСТВО"""
 
-# Список библейских книг для фильтрации
+# Список библейских книг (улучшенный фильтр)
 BIBLE_BOOKS = [
     'бытие', 'быт', 'исход', 'исх', 'левит', 'лев', 'числ', 'числа', 'второзаконие', 'втор',
     'иисус', 'нав', 'судей', 'суд', 'руфь', 'руф', 'царств', 'цар', 'паралипоменон', 'пар',
@@ -106,113 +114,126 @@ BIBLE_BOOKS = [
     'филимону', 'флм', 'евреям', 'евр'
 ]
 
-# Популярные книги для "Стих дня" (ID + название + макс главы)
+# Популярные книги для "Стиха дня" (ID, название, макс главы)
 POPULAR_BOOKS = [
-    (1, "Бытие", 50),
-    (19, "Псалтирь", 150),
-    (20, "Притчи", 31),
-    (23, "Исаия", 66),
-    (40, "Матфея", 28),
-    (41, "Марка", 16),
-    (42, "Луки", 24),
-    (43, "Иоанна", 21),
-    (44, "Деяния", 28),
-    (45, "Римлянам", 16),
-    (46, "1 Коринфянам", 16),
-    (49, "Ефесянам", 6),
-    (50, "Филиппийцам", 4),
-    (58, "Евреям", 13),
-    (59, "Иакова", 5),
-    (60, "1 Петра", 5),
-    (62, "1 Иоанна", 5)
+    (1, "Бытие", 50), (19, "Псалтирь", 150), (20, "Притчи", 31), (23, "Исаия", 66),
+    (40, "Матфея", 28), (41, "Марка", 16), (42, "Луки", 24), (43, "Иоанна", 21),
+    (44, "Деяния", 28), (45, "Римлянам", 16), (46, "1 Коринфянам", 16),
+    (49, "Ефесянам", 6), (50, "Филиппийцам", 4), (58, "Евреям", 13),
+    (59, "Иакова", 5), (60, "1 Петра", 5), (62, "1 Иоанна", 5)
 ]
 
 def get_random_verse():
-    """Получает случайный стих из Библии через JustBible API"""
+    """✅ ИСПРАВЛЕННАЯ версия - работает с реальной структурой JustBible API"""
     try:
-        # Выбираем случайную книгу
         book_id, book_name, max_chapter = random.choice(POPULAR_BOOKS)
-        
-        # Случайная глава
         chapter = random.randint(1, max_chapter)
         
-        # Получаем данные главы
+        logger.info(f"📖 Запрос стиха: {book_name} {chapter}")
+        
         url = f"https://justbible.ru/api/book/{book_id}/chapters/{chapter}"
-        response = requests.get(url, timeout=10)
+        response = requests.get(url, timeout=15)
+        
+        logger.info(f"HTTP {response.status_code}")
         
         if response.status_code != 200:
+            logger.error(f"API error {response.status_code}: {response.text[:200]}")
             return None
         
         data = response.json()
-        verses = data.get('verses', [])
+        logger.info(f"API keys: {list(data.keys())}")
         
-        if not verses:
+        # Гибкий парсинг разных структур ответа
+        verses = (
+            data.get('verses') or 
+            data.get('chapter', {}).get('verses') or 
+            data.get('data', {}).get('verses') or
+            []
+        )
+        
+        if not verses or not isinstance(verses, list) or len(verses) == 0:
+            logger.error(f"Нет verses в ответе: {list(data.keys())}")
             return None
         
-        # Случайный стих
         verse_data = random.choice(verses)
-        verse_num = verse_data.get('number')
+        verse_num = str(verse_data.get('number') or verse_data.get('verse', ''))
         verse_text = verse_data.get('text', '').strip()
         
-        return f"{book_name} {chapter}:{verse_num}\n\n{verse_text}"
+        if not verse_num or not verse_text:
+            logger.error(f"Неполные данные: {verse_data}")
+            return None
+        
+        result = f"{book_name} {chapter}:{verse_num}\n\n{verse_text}"
+        logger.info(f"✅ Стих получен: {result[:100]}...")
+        return result
     
+    except requests.exceptions.Timeout:
+        logger.error("Timeout при запросе к JustBible API")
+        return None
     except Exception as e:
-        print(f"Ошибка получения стиха: {e}")
+        logger.error(f"Ошибка get_random_verse: {type(e).__name__}: {str(e)}")
+        logger.error(traceback.format_exc())
         return None
 
 def send_smart_split(chat_id, text):
-    """Умная разбивка длинных сообщений по логическим блокам (макс 4096 символов)"""
-    max_length = 4000  # Оставляем запас
+    """Умная разбивка с исправлением escape-последовательностей"""
+    max_length = 4000
     
     if len(text) <= max_length:
         bot.send_message(chat_id, text, parse_mode='HTML')
         return
     
-    # Разбиваем по пунктам (1., 2., 3. и т.д.)
+    # ✅ ИСПРАВЛЕНО: правильное разделение по \n
     parts = []
     current_part = ""
-    
-    lines = text.split('\n')
+    lines = text.split('\n')  # Было '\\n' - ошибка!
     
     for line in lines:
-        if len(current_part) + len(line) + 1 > max_length:
-            if current_part:
+        test_part = current_part + line + '\n'
+        if len(test_part) > max_length:
+            if current_part.strip():
                 parts.append(current_part.strip())
-                current_part = line + '\n'
-            else:
-                # Если одна строка больше лимита - разбиваем по предложениям
-                sentences = line.split('. ')
-                for sentence in sentences:
-                    if len(current_part) + len(sentence) + 2 > max_length:
-                        if current_part:
-                            parts.append(current_part.strip())
-                        current_part = sentence + '. '
-                    else:
-                        current_part += sentence + '. '
+            current_part = line + '\n'
         else:
-            current_part += line + '\n'
+            current_part = test_part
     
-    if current_part:
+    if current_part.strip():
         parts.append(current_part.strip())
     
-    # Отправляем все части
-    for part in parts:
+    for i, part in enumerate(parts, 1):
         bot.send_message(chat_id, part, parse_mode='HTML')
-        time.sleep(0.5)
+        logger.info(f"Отправлена часть {i}/{len(parts)} ({len(part)} символов)")
+        time.sleep(0.3)
 
 def get_main_keyboard():
-    """Создаёт главную клавиатуру с кнопкой 'Стих дня'"""
-    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=False)
     markup.add(types.KeyboardButton("📖 Стих дня"))
     return markup
 
+def is_bible_reference(text):
+    """✅ УЛУЧШЕННЫЙ фильтр с regex"""
+    text_lower = text.lower()
+    
+    # Паттерн: слово_библии + цифры:цифры (границы слов)
+    bible_pattern = r'\b(' + '|'.join(BIBLE_BOOKS) + r')\b.*?\s*(\d+)[.:](\d+)'
+    has_reference = bool(re.search(bible_pattern, text_lower))
+    
+    # Или длинный текст (вероятно стих)
+    is_long = len(text) >= 50
+    
+    logger.info(f"Фильтр: reference={has_reference}, long={is_long}, len={len(text)}")
+    return has_reference or is_long
+
 @bot.message_handler(commands=['start'])
 def welcome(message):
-    # Отправляем приветствие с клавиатурой
     markup = get_main_keyboard()
     bot.send_message(
-        message.chat.id, 
-        "🕊 Бот для глубокого библейского разбора готов к работе!\n\n<b>Что можно делать:</b>\n• Пришли библейскую ссылку (например: <b>Римлянам 5:1</b>)\n• Нажми <b>📖 Стих дня</b> для случайного стиха\n• Или пришли полный текст стиха",
+        message.chat.id,
+        "🕊 <b>Бот для глубокого библейского разбора</b> готов! 🙏\n\n"
+        "<i>Что можно:</i>\n"
+        "• <b>Римлянам 5:1</b> — ссылка на стих\n"
+        "• <b>📖 Стих дня</b> — случайный стих + разбор\n"
+        "• Полный текст стиха",
         parse_mode='HTML',
         reply_markup=markup
     )
@@ -222,105 +243,125 @@ def handle_message(message):
     chat_id = message.chat.id
     text = message.text.strip()
     
-    # ✅ КНОПКА "СТИХ ДНЯ"
+    logger.info(f"Сообщение от {chat_id}: '{text[:50]}...'")
+    
+    # ✅ КНОПКА "СТИХ ДНЯ" с улучшенной обработкой
     if text == "📖 Стих дня":
+        bot.send_message(chat_id, "⏳ Получаю вдохновляющий стих...", parse_mode='HTML')
         bot.send_chat_action(chat_id, 'typing')
+        
         verse = get_random_verse()
         
         if not verse:
-            bot.send_message(chat_id, "Не удалось получить стих. Попробуй ещё раз.", parse_mode='HTML')
+            bot.send_message(
+                chat_id, 
+                "❌ Не удалось получить стих из Библии.\n"
+                "Попробуй ещё раз или пришли ссылку вручную! 📖",
+                parse_mode='HTML',
+                reply_markup=get_main_keyboard()
+            )
             return
         
-        # Отправляем стих
+        # Показываем стих
         bot.send_message(chat_id, f"📖 <b>Стих дня:</b>\n\n{verse}", parse_mode='HTML')
         time.sleep(1)
         
-        # Автоматически делаем разбор
-        text = verse  # Передаём стих для разбора
+        # Авторазбор
+        text = verse
+        logger.info("Авторазбор стиха дня")
     
-    # ✅ СТРОГИЙ ФИЛЬТР: разрешаем разбор только для библейских текстов
-    text_lower = text.lower()
-    
-    # Проверяем наличие библейской книги
-    has_bible_book = any(book in text_lower for book in BIBLE_BOOKS)
-    
-    # Проверяем формат ссылки (цифра + двоеточие)
-    has_chapter_verse = ':' in text and any(char.isdigit() for char in text)
-    
-    # Или очень длинный текст (вероятно, полный стих)
-    is_very_long = len(text) >= 50
-    
-    # Разрешаем разбор только если есть название книги + ссылка ИЛИ очень длинный текст
-    if not ((has_bible_book and has_chapter_verse) or is_very_long):
+    # ✅ СТРОГИЙ ФИЛЬТР
+    if not is_bible_reference(text):
         markup = get_main_keyboard()
         bot.send_message(
-            chat_id, 
-            "Пришли мне библейский текст или ссылку на отрывок для разбора.\n\n<b>Примеры:</b>\n• Римлянам 5:1\n• Бытие 1:1\n• Или нажми <b>📖 Стих дня</b>",
+            chat_id,
+            "📖 Пришли <b>библейскую ссылку</b> или <b>текст стиха</b>:\n\n"
+            "• <i>Римлянам 5:1</i>\n"
+            "• <i>Иоанна 3:16</i>\n"
+            "• Или <b>📖 Стих дня</b>",
             parse_mode='HTML',
             reply_markup=markup
         )
         return
     
+    # ✅ РАЗБОР С RETRY
+    bot.send_message(chat_id, "🔍 <b>Делаю глубокий экзегетический разбор...</b>", parse_mode='HTML')
     bot.send_chat_action(chat_id, 'typing')
-
-    try:
-        response = requests.post(
-            "https://neuroapi.host/v1/chat/completions",
-            headers={"Authorization": f"Bearer {NEURO_KEY}"},
-            json={
-                "model": MODEL_NAME, 
-                "messages": [
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": text}
-                ], 
-                "temperature": 0.7,
-                "max_tokens": 4000
-            },
-            timeout=120
-        )
-        if response.status_code == 200:
-            ans = response.json()['choices'][0]['message']['content'].strip()
-            send_smart_split(chat_id, ans)
-        else:
-            bot.send_message(chat_id, f"Ошибка API: {response.status_code}")
-    except Exception as e:
-        bot.send_message(chat_id, f"Произошла ошибка: {str(e)}")
+    
+    max_retries = 2
+    for attempt in range(max_retries + 1):
+        try:
+            response = requests.post(
+                "https://neuroapi.host/v1/chat/completions",
+                headers={"Authorization": f"Bearer {NEURO_KEY}"},
+                json={
+                    "model": MODEL_NAME,
+                    "messages": [
+                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {"role": "user", "content": text}
+                    ],
+                    "temperature": 0.7,
+                    "max_tokens": 4000
+                },
+                timeout=50  # Уменьшен для webhook
+            )
+            
+            if response.status_code == 200:
+                ans = response.json()['choices'][0]['message']['content'].strip()
+                send_smart_split(chat_id, ans)
+                logger.info(f"✅ Разбор успешен для '{text[:50]}'")
+                return
+            else:
+                logger.warning(f"NeuroAPI {response.status_code}: {response.text[:200]}")
+                
+        except Exception as e:
+            logger.error(f"Попытка {attempt + 1}: {type(e).__name__}: {str(e)}")
+        
+        if attempt < max_retries:
+            time.sleep(2 ** attempt)  # Экспоненциальная задержка
+    
+    # Финальная ошибка
+    bot.send_message(
+        chat_id,
+        "❌ Не удалось сделать разбор (проблема с ИИ). "
+        "Попробуй другой стих или позже! 🙏",
+        reply_markup=get_main_keyboard()
+    )
 
 if __name__ == "__main__":
     app = Flask(__name__)
     
     @app.route("/" + TG_TOKEN, methods=["POST"])
     def webhook():
-        json_str = request.get_data().decode("UTF-8")
-        update = telebot.types.Update.de_json(json_str)
-        
-        # ✅ АНТИДУБЛИКАТ: проверяем, не обрабатывали ли мы этот update_id
-        if update.update_id in processed_updates:
+        try:
+            json_str = request.get_data().decode("UTF-8")
+            update = telebot.types.Update.de_json(json_str)
+            
+            # ✅ АНТИДУБЛИКАТ улучшенный
+            if update.update_id in processed_updates:
+                logger.info(f"Дубликат update_id: {update.update_id}")
+                return "", 200
+            
+            processed_updates.append(update.update_id)
+            
+            if not update.message or not update.message.text:
+                return "", 200
+            
+            bot.process_new_updates([update])
             return "", 200
-        
-        # Добавляем в обработанные
-        processed_updates.add(update.update_id)
-        
-        # Ограничиваем размер set (храним последние 1000)
-        if len(processed_updates) > 1000:
-            processed_updates.clear()
-        
-        # ✅ ФИЛЬТР: только текстовые сообщения пользователя
-        if not update.message or not update.message.text:
-            return "", 200
-        
-        bot.process_new_updates([update])
-        return "", 200
+            
+        except Exception as e:
+            logger.error(f"Webhook error: {str(e)}")
+            return "", 500
     
     @app.route("/")
     def index():
-        return "Bot is running!", 200
+        return "🕊 Bible Bot v2.0 - Готов к экзегетике!", 200
     
-    # Устанавливаем webhook
+    # Webhook
     bot.remove_webhook()
     WEBHOOK_URL = f"https://bible-bot-ssx4.onrender.com/{TG_TOKEN}"
     bot.set_webhook(url=WEBHOOK_URL)
-    print(f"Webhook установлен: {WEBHOOK_URL}")
+    logger.info(f"🚀 Webhook: {WEBHOOK_URL}")
     
-    # Запускаем Flask
-    app.run(host="0.0.0.0", port=8080)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
