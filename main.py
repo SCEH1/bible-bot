@@ -1,13 +1,12 @@
 import logging
 import time
 import os
-import signal
 import sys
-import threading
 from collections import OrderedDict
 from flask import Flask, request
 import telebot
-from config import TG_TOKEN, NEURO_KEY, WEBHOOK_URL, SYSTEM_PROMPT
+# Добавлен импорт BOT_NAME
+from config import TG_TOKEN, NEURO_KEY, WEBHOOK_URL, SYSTEM_PROMPT, BOT_NAME
 from bible_data import BIBLE_VERSES, get_verse_by_ref, get_verses_by_topic
 from storage import add_favorite, get_favorites, remove_favorite
 
@@ -15,6 +14,7 @@ from storage import add_favorite, get_favorites, remove_favorite
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
+# threaded=False важен для Flask, чтобы обрабатывать запросы в основном потоке
 bot = telebot.TeleBot(TG_TOKEN, threaded=False)
 app = Flask(__name__)
 
@@ -61,18 +61,22 @@ def send_long_message(chat_id, text):
         parts.append(current)
     
     for part in parts:
-        bot.send_message(chat_id, part, parse_mode="Markdown")
-        time.sleep(0.5)
+        try:
+            bot.send_message(chat_id, part, parse_mode="Markdown")
+            time.sleep(0.5)
+        except Exception as e:
+            logger.error(f"Ошибка отправки сообщения: {e}")
 
 def call_neuro_api(query):
     """Заглушка для AI. Замените на реальный запрос к вашему API"""
     # Пример реального запроса через requests:
+    # import requests
     # headers = {"Authorization": f"Bearer {NEURO_KEY}"}
     # data = {"prompt": f"{SYSTEM_PROMPT}\n{query}"}
-    # resp = requests.post("https://api.your-ai.com/generate", json=data, headers=headers)
+    # resp = requests.post("https://api.your-ai.com/generate", json=data, headers=headers, timeout=10)
     # return resp.json().get('text', "Ошибка API")
     
-    time.sleep(1) # Имитация задержки
+    time.sleep(1.5) # Имитация задержки
     return f"🤖 *AI Ответ (Демо)*\n\nВопрос: \"{query}\"\n\n*(Здесь будет ответ от нейросети. Интеграция через requests готова в коде)*"
 
 # --- ОБРАБОТЧИКИ КОМАНД ---
@@ -109,8 +113,6 @@ def cmd_random(message):
     import random
     verse = random.choice(BIBLE_VERSES)
     text = f"📖 *{verse['ref']}*\n_{verse['text']}_"
-    markup = telebot.types.InlineKeyboardMarkup()
-    # Для кнопки сохранения нужно передать данные через callback, здесь упрощено
     bot.send_message(message.chat.id, text, parse_mode="Markdown")
 
 @bot.message_handler(commands=['ask'])
@@ -219,9 +221,18 @@ def health():
 
 def set_webhook():
     if WEBHOOK_URL:
+        # Сначала удаляем старый вебхук, чтобы сбросить ошибочные настройки
         bot.remove_webhook()
+        # Устанавливаем новый
         bot.set_webhook(url=WEBHOOK_URL)
-        logger.info(f"Webhook установлен: {WEBHOOK_URL}")
+        logger.info(f"Webhook установлен на: {WEBHOOK_URL}")
+        
+        # Проверка статуса
+        info = bot.get_webhook_info()
+        if info.url == WEBHOOK_URL:
+            logger.info("✅ Webhook успешно проверен!")
+        else:
+            logger.error(f"❌ Ошибка: Telegram вернул другой URL: {info.url}")
     else:
         logger.warning("WEBHOOK_URL не задан! Бот не будет получать сообщения на Render.")
 
