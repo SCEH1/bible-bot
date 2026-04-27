@@ -108,6 +108,7 @@ def get_main_keyboard():
     """Главная клавиатура"""
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
     markup.add(types.KeyboardButton("📖 Стих дня"), types.KeyboardButton("📚 По теме"))
+    markup.add(types.KeyboardButton("⭐ Избранное"))
     return markup
 
 
@@ -340,6 +341,7 @@ def welcome(message):
         "• <b>Римлянам 5:1</b> - ссылка на стих\n"
         "• <b>📖 Стих дня</b> - случайный стих из 220+\n"
         "• <b>📚 По теме</b> - стихи по темам\n"
+        "• <b>⭐ Избранное</b> - открыть избранные стихи\n"
         "• <b>/favorite</b> - сохранить текущий стих\n"
         "• <b>/myfavorites</b> - открыть избранное\n"
         "• Полный текст стиха для разбора",
@@ -400,6 +402,10 @@ def handle_message(message):
             parse_mode='HTML',
             reply_markup=get_theme_keyboard()
         )
+        return
+
+    if text == "⭐ Избранное":
+        send_favorites_list(chat_id)
         return
 
     if not is_bible_reference(text):
