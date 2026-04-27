@@ -1,330 +1,275 @@
 import logging
-import asyncio
+import time
 import signal
 import sys
-import time
+import os
+import telebot
+from flask import Flask, request
+from threading import Thread, Lock
 from collections import OrderedDict
-from aiogram import Bot, Dispatcher, types
-from aiogram.filters import Command
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
-from config import TG_TOKEN, NEURO_KEY, WEBHOOK_URL, SYSTEM_PROMPT, COOLDOWN_SECONDS, MAX_MESSAGE_LENGTH
+
+from config import TG_TOKEN, NEURO_KEY, WEBHOOK_URL, SYSTEM_PROMPT, COOLDOWN_SECONDS
 from bible_data import BIBLE_VERSES, get_verse_by_ref, get_verses_by_topic
 from storage import add_favorite, get_favorites, remove_favorite
 
 # --- НАСТРОЙКА ЛОГИРОВАНИЯ ---
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-# --- ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ---
-bot = Bot(token=TG_TOKEN)
-dp = Dispatcher()
+# --- ИНИЦИАЛИЗАЦИЯ ---
+bot = telebot.TeleBot(TG_TOKEN)
+app = Flask(__name__)
 
-# Простой LRU-кэш для ответов API (экономия токенов)
-# Формат: { "запрос": {"ответ": "...", "время": timestamp} }
+# Кэш ответов (LRU)
 CACHE = OrderedDict()
 CACHE_MAX_SIZE = 100
-CACHE_TTL = 3600 * 24  # 24 часа
+CACHE_TTL = 3600 * 24
+cache_lock = Lock()
 
-# Отслеживание кулдауна пользователей
+# Кулдаун пользователей
 user_cooldowns = {}
-
-# Флаг для корректной остановки
-shutdown_event = asyncio.Event()
+cooldown_lock = Lock()
 
 # --- УТИЛИТЫ ---
 
 def clean_cache():
-    """Очистка старого кэша"""
     now = time.time()
-    keys_to_delete = []
-    for key, val in CACHE.items():
-        if now - val['time'] > CACHE_TTL:
-            keys_to_delete.append(key)
-    
-    for key in keys_to_delete:
-        del CACHE[key]
+    keys_to_delete = [k for k, v in CACHE.items() if now - v['time'] > CACHE_TTL]
+    with cache_lock:
+        for k in keys_to_delete:
+            del CACHE[k]
 
-def get_cached_response(prompt: str) -> str | None:
+def get_cached_response(prompt: str):
     clean_cache()
-    if prompt in CACHE:
-        logger.info(f"Найден ответ в кэше для: {prompt[:20]}...")
-        return CACHE[prompt]['response']
+    with cache_lock:
+        if prompt in CACHE:
+            logger.info(f"Кэш: {prompt[:20]}...")
+            return CACHE[prompt]['response']
     return None
 
 def save_to_cache(prompt: str, response: str):
     clean_cache()
-    if len(CACHE) >= CACHE_MAX_SIZE:
-        CACHE.popitem(last=False) # Удаляем самый старый
-    CACHE[prompt] = {'response': response, 'time': time.time()}
+    with cache_lock:
+        if len(CACHE) >= CACHE_MAX_SIZE:
+            CACHE.popitem(last=False)
+        CACHE[prompt] = {'response': response, 'time': time.time()}
 
-async def send_long_message(message: types.Message, text: str):
-    """Разбивка длинного сообщения на части, если оно превышает лимит Telegram"""
-    if len(text) <= MAX_MESSAGE_LENGTH:
-        await message.answer(text, parse_mode="Markdown")
+def send_long_message(chat_id, text):
+    """Разбивка длинных сообщений для telebot"""
+    max_len = 4096
+    if len(text) <= max_len:
+        bot.send_message(chat_id, text, parse_mode="Markdown")
         return
     
     parts = []
-    current_part = ""
-    lines = text.split('\n')
-    
-    for line in lines:
-        if len(current_part) + len(line) + 1 > MAX_MESSAGE_LENGTH:
-            parts.append(current_part)
-            current_part = line
+    current = ""
+    for line in text.split('\n'):
+        if len(current) + len(line) + 1 > max_len:
+            parts.append(current)
+            current = line
         else:
-            current_part += ("\n" if current_part else "") + line
+            current += ("\n" if current else "") + line
+    if current:
+        parts.append(current)
     
-    if current_part:
-        parts.append(current_part)
+    for part in parts:
+        bot.send_message(chat_id, part, parse_mode="Markdown")
+        time.sleep(0.5)
+
+def call_neuro_api_sync(question: str) -> str:
+    """Синхронный вызов API (так как telebot по умолчанию синхронный)"""
+    # ЗАМЕНИТЕ НА РЕАЛЬНЫЙ ЗАПРОС ЧЕРЕЗ requests.post(...)
+    # Пример:
+    # headers = {"Authorization": f"Bearer {NEURO_KEY}"}
+    # resp = requests.post("URL_API", json={"prompt": question}, headers=headers)
+    # return resp.json()['answer']
     
-    for i, part in enumerate(parts):
-        await message.answer(part, parse_mode="Markdown")
-        if i < len(parts) - 1:
-            await asyncio.sleep(0.5) # Небольшая пауза между частями
+    time.sleep(1.5) # Имитация задержки
+    return f"🤖 *AI Разбор (Демо)*\n\nВопрос: \"{question}\"\n\n*(Здесь будет ответ от вашего API)*"
 
-async def call_neuro_api(prompt: str) -> str:
-    """Вызов внешнего AI API (заглушка для примера структуры)"""
-    # В реальном проекте здесь будет запрос к вашему AI сервису
-    # Используем фиктивную задержку для имитации работы
-    await asyncio.sleep(1.5) 
+# --- ОБРАБОТЧИКИ КОМАНД (TELEBOT) ---
+
+@bot.message_handler(commands=['start'])
+def handle_start(message):
+    kb = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.add(telebot.types.KeyboardButton("📖 Случайный стих"))
+    kb.add(telebot.types.KeyboardButton("❤️ Избранное"))
+    kb.add(telebot.types.KeyboardButton("🔍 Поиск по теме"))
     
-    # Для демонстрации возвращаем эхо-ответ, если нет реального эндпоинта
-    # ЗАМЕНИТЕ ЭТОТ БЛОК НА РЕАЛЬНЫЙ REQUESTS/AIOHTTP ЗАПРОС
-    response_text = f"🤖 *AI Разбор (Демо)*\n\nВы спросили: \"{prompt}\"\n\nЗдесь должен быть ответ от нейросети с ключом {NEURO_KEY[:4]}...\n\n*(В реальной версии здесь будет интеграция с вашим API)*"
-    return response_text
+    text = (f"👋 Привет! Я {BOT_NAME}.\n\n"
+            "Я помогу найти утешение в Библии.\n\n"
+            "Команды:\n"
+            "/random - случайный стих\n"
+            "/ask <вопрос> - разбор вопроса через AI\n"
+            "/fav - избранное")
+    bot.send_message(message.chat.id, text, reply_markup=kb)
 
-# --- ОБРАБОТЧИКИ КОМАНД ---
+@bot.message_handler(commands=['help'])
+def handle_help(message):
+    text = ("📚 *Команды:*\n"
+            "/start - Меню\n"
+            "/random - Случайный стих\n"
+            "/ask <текст> - Вопрос к AI\n"
+            "/topic <тема> - Стихи по теме\n"
+            "/fav - Избранное\n"
+            "/save <ссылка> - Сохранить стих\n"
+            "/del <ссылка> - Удалить стих")
+    bot.send_message(message.chat.id, text, parse_mode="Markdown")
 
-@dp.message(Command("start"))
-async def cmd_start(message: types.Message):
-    kb = ReplyKeyboardMarkup(keyboard=[
-        [KeyboardButton(text="📖 Случайный стих"), KeyboardButton(text="❤️ Избранное")],
-        [KeyboardButton(text="🔍 Поиск по теме")]
-    ], resize_keyboard=True)
-    await message.answer(
-        f"👋 Привет! Я {BOT_NAME}.\n\n"
-        "Я помогу тебе найти утешение и мудрость в Библии.\n\n"
-        "Что я умею:\n"
-        "/random — случайный стих\n"
-        "/topic <тема> — стихи по теме (страх, радость, любовь...)\n"
-        "/ask <вопрос> — глубокий разбор вопроса через AI\n"
-        "/fav — мое избранное",
-        reply_markup=kb
-    )
-
-@dp.message(Command("help"))
-async def cmd_help(message: types.Message):
-    await message.answer(
-        "📚 *Команды бота:*\n\n"
-        "/start - Главное меню\n"
-        "/random - Случайный стих утешения\n"
-        "/ask <текст> - Задать вопрос и получить развернутый библейский ответ от AI\n"
-        "/topic <тема> - Найти стихи по теме (например: страх, надежда)\n"
-        "/fav - Посмотреть сохраненные стихи\n"
-        "/del <ссылка> - Удалить стих из избранного"
-    )
-
-@dp.message(Command("random"))
-async def cmd_random(message: types.Message):
+@bot.message_handler(commands=['random'])
+def handle_random(message):
     import random
     verse = random.choice(BIBLE_VERSES)
     text = f"📖 *{verse['ref']}*\n_{verse['text']}_"
-    
-    kb = ReplyKeyboardMarkup(keyboard=[
-        [KeyboardButton(text="💾 Сохранить в избранное")]
-    ], resize_keyboard=True)
-    # Сохраняем контекст для кнопки (в реальном боте лучше использовать callback_data)
-    # Здесь упрощенно: пользователь должен написать /save <ссылка> или использовать инлайн
-    await message.answer(text, parse_mode="Markdown", reply_markup=kb)
+    kb = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.add(telebot.types.KeyboardButton("💾 Сохранить"))
+    bot.send_message(message.chat.id, text, parse_mode="Markdown", reply_markup=kb)
+    # Сохраняем последний стих в памяти для кнопки (упрощенно)
+    # В продакшене лучше использовать user_data или FSM
+    if not hasattr(handle_random, 'last_verse'):
+        handle_random.last_verse = {}
+    handle_random.last_verse[message.chat.id] = verse
 
-@dp.message(Command("ask"))
-async def cmd_ask(message: types.Message):
-    user_id = message.from_user.id
+@bot.message_handler(commands=['ask'])
+def handle_ask(message):
+    chat_id = message.chat.id
+    args = message.text.split(maxsplit=1)
+    
+    if len(args) < 2:
+        bot.send_message(chat_id, "❌ Пример: `/ask Почему Бог допускает зло?`", parse_mode="Markdown")
+        return
+
+    question = " ".join(args[1:])
     now = time.time()
     
-    # Проверка кулдауна
-    if user_id in user_cooldowns:
-        last_time = user_cooldowns[user_id]
+    with cooldown_lock:
+        last_time = user_cooldowns.get(chat_id, 0)
         if now - last_time < COOLDOWN_SECONDS:
-            wait_time = int(COOLDOWN_SECONDS - (now - last_time))
-            await message.answer(f"⏳ Пожалуйста, подождите {wait_time} сек. перед следующим вопросом.")
+            wait = int(COOLDOWN_SECONDS - (now - last_time))
+            bot.send_message(chat_id, f"⏳ Подождите {wait} сек.")
             return
-    
-    user_cooldowns[user_id] = now
-    
-    # Получаем текст вопроса (после команды /ask)
-    question = message.text.split(maxsplit=1)
-    if len(question) < 2:
-        await message.answer("❌ Пожалуйста, напишите вопрос после команды.\nПример: `/ask Почему Бог допускает страдания?`")
-        return
-    
-    query_text = " ".join(question[1:])
-    prompt = f"{SYSTEM_PROMPT}\n\nВопрос пользователя: {query_text}"
-    
-    # Проверка кэша
-    cached = get_cached_response(prompt)
-    if cached:
-        await send_long_message(message, cached)
-        return
+        user_cooldowns[chat_id] = now
 
-    # Индикатор загрузки
-    status_msg = await message.answer("🤖 Думаю и ищу в Писании...")
+    status_msg = bot.send_message(chat_id, "🤖 Думаю...")
     
     try:
-        # Вызов AI (асинхронно)
-        answer = await call_neuro_api(query_text)
+        prompt = f"{SYSTEM_PROMPT}\nВопрос: {question}"
+        cached = get_cached_response(prompt)
         
-        # Сохранение в кэш
-        save_to_cache(prompt, answer)
+        if cached:
+            answer = cached
+        else:
+            answer = call_neuro_api_sync(question)
+            save_to_cache(prompt, answer)
         
-        await status_msg.delete()
-        await send_long_message(message, answer)
-        
+        bot.delete_message(chat_id, status_msg.message_id)
+        send_long_message(chat_id, answer)
     except Exception as e:
-        logger.error(f"Ошибка AI API: {e}")
-        await status_msg.edit_text("❌ Произошла ошибка при получении ответа. Попробуйте позже.")
+        logger.error(e)
+        bot.edit_message_text("❌ Ошибка API.", chat_id, status_msg.message_id)
 
-@dp.message(Command("fav"))
-async def cmd_fav(message: types.Message):
-    user_id = message.from_user.id
-    favs = get_favorites(user_id)
-    
+@bot.message_handler(commands=['fav'])
+def handle_fav(message):
+    favs = get_favorites(message.chat.id)
     if not favs:
-        await message.answer("📭 Ваше избранное пока пусто.")
+        bot.send_message(message.chat.id, "📭 Пусто.")
         return
     
-    response = "❤️ *Ваше избранное:*\n\n"
+    text = "❤️ *Избранное:*\n\n"
     for i, item in enumerate(favs, 1):
-        response += f"{i}. *{item['reference']}*\n_{item['text']}_\n\n"
-        if len(response) > MAX_MESSAGE_LENGTH - 100:
-            response += "... (сообщение обрезано)"
+        text += f"{i}. *{item['reference']}*\n_{item['text']}_\n\n"
+        if len(text) > 4000:
+            text += "... (обрезано)"
             break
-            
-    await send_long_message(message, response)
+    send_long_message(message.chat.id, text)
 
-@dp.message(Command("save"))
-async def cmd_save(message: types.Message):
-    # Упрощенная логика сохранения: /save Ин 3:16
+@bot.message_handler(commands=['save'])
+def handle_save(message):
     args = message.text.split(maxsplit=1)
     if len(args) < 2:
-        await message.answer("❌ Использование: `/save <Ссылка>` (например: `/save Ин 3:16`)")
+        # Если нажата кнопка "Сохранить" после /random
+        if hasattr(handle_random, 'last_verse') and message.chat.id in handle_random.last_verse:
+            verse = handle_random.last_verse[message.chat.id]
+            if add_favorite(message.chat.id, verse['text'], verse['ref']):
+                bot.send_message(message.chat.id, f"✅ {verse['ref']} сохранен!", parse_mode="Markdown")
+            else:
+                bot.send_message(message.chat.id, "Уже есть.")
+            return
+        
+        bot.send_message(message.chat.id, "❌ Пример: `/save Ин 3:16`")
         return
-    
+
     ref = args[1]
     verse = get_verse_by_ref(ref)
-    
     if not verse:
-        await message.answer(f"❌ Стих `{ref}` не найден в базе. Попробуйте другой формат.")
+        bot.send_message(message.chat.id, f"❌ {ref} не найден.")
         return
     
-    user_id = message.from_user.id
-    if add_favorite(user_id, verse['text'], verse['ref']):
-        await message.answer(f"✅ Стих *{verse['ref']}* сохранен в избранное!", parse_mode="Markdown")
+    if add_favorite(message.chat.id, verse['text'], verse['ref']):
+        bot.send_message(message.chat.id, f"✅ {verse['ref']} сохранен!", parse_mode="Markdown")
     else:
-        await message.answer("ℹ️ Этот стих уже есть в вашем избранном.")
+        bot.send_message(message.chat.id, "Уже есть.")
 
-@dp.message(Command("del"))
-async def cmd_del(message: types.Message):
+@bot.message_handler(commands=['del'])
+def handle_del(message):
     args = message.text.split(maxsplit=1)
     if len(args) < 2:
-        await message.answer("❌ Использование: `/del <Ссылка>`")
+        bot.send_message(message.chat.id, "❌ Пример: `/del Ин 3:16`")
         return
-    
-    ref = args[1]
-    user_id = message.from_user.id
-    
-    if remove_favorite(user_id, ref):
-        await message.answer(f"🗑 Стих *{ref}* удален из избранного.", parse_mode="Markdown")
+    if remove_favorite(message.chat.id, args[1]):
+        bot.send_message(message.chat.id, "🗑 Удалено.", parse_mode="Markdown")
     else:
-        await message.answer("❌ Стих не найден в вашем избранном.")
+        bot.send_message(message.chat.id, "Не найдено.")
 
-# --- ОБРАБОТКА ТЕКСТОВЫХ СООБЩЕНИЙ (КНОПКИ) ---
-
-@dp.message()
-async def handle_text(message: types.Message):
-    text = message.text.strip()
-    
-    if text == "📖 Случайный стих":
-        await cmd_random(message)
-    elif text == "❤️ Избранное":
-        await cmd_fav(message)
-    elif text == "💾 Сохранить в избранное":
-        # В реальном боте нужно передавать контекст предыдущего сообщения
-        # Здесь заглушка
-        await message.answer("ℹ️ Чтобы сохранить стих, используйте команду `/save <Ссылка>`")
-    elif text == "🔍 Поиск по теме":
-        await message.answer("Напишите тему (например: *страх*, *радость*, *любовь*), и я найду подходящие стихи.", parse_mode="Markdown")
+@bot.message_handler(func=lambda m: True)
+def handle_text(message):
+    txt = message.text.strip()
+    if txt == "📖 Случайный стих":
+        handle_random(message)
+    elif txt == "❤️ Избранное":
+        handle_fav(message)
+    elif txt == "💾 Сохранить":
+        # Эмуляция команды save
+        msg = type('obj', (object,), {'chat.id': message.chat.id, 'text': '/save'})
+        handle_save(msg)
+    elif txt == "🔍 Поиск по теме":
+        bot.send_message(message.chat.id, "Напишите тему (страх, радость...), я найду стихи.")
     else:
-        # Если пользователь просто пишет текст, предлагаем задать вопрос через /ask
-        await message.answer(
-            f"Я вижу ваше сообщение: \"{text[:50]}...\"\n\n"
-            "Хотите получить библейский разбор этой темы? Используйте команду:\n"
-            f"`/ask {text}`",
-            parse_mode="Markdown"
-        )
+        bot.send_message(message.chat.id, 
+                         f"Хотите спросить об этом?\nНапишите: `/ask {txt}`", 
+                         parse_mode="Markdown")
 
-# --- ЗАПУСК И ОСТАНОВКА ---
+# --- FLASK & WEBHOOK ---
 
-async def on_startup():
-    logger.info("Бот запускается...")
-    if WEBHOOK_URL:
-        await bot.set_webhook(WEBHOOK_URL)
-        logger.info(f"Webhook установлен на: {WEBHOOK_URL}")
-    else:
-        logger.info("Webhook URL не задан. Запуск в режиме Polling.")
+@app.route('/', methods=['GET'])
+def health():
+    return "OK", 200
 
-async def on_shutdown():
-    logger.info("Бот останавливается...")
-    await bot.delete_webhook()
-    await bot.session.close()
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    update = request.get_json()
+    if update:
+        bot.process_new_updates([telebot.types.Update.de_json(update)])
+    return "", 200
 
-def register_signals():
-    """Регистрация обработчиков сигналов для корректного завершения"""
-    loop = asyncio.get_running_loop()
-    
-    for sig in (signal.SIGTERM, signal.SIGINT):
-        loop.add_signal_handler(
-            sig,
-            lambda: asyncio.create_task(shutdown_procedure())
-        )
+def start_webhook():
+    bot.remove_webhook()
+    bot.set_webhook(WEBHOOK_URL)
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
 
-async def shutdown_procedure():
-    logger.info("Получен сигнал завершения. Остановка...")
-    shutdown_event.set()
-    await on_shutdown()
-    # Завершаем все задачи
-    tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
-    for task in tasks:
-        task.cancel()
-    await asyncio.gather(*tasks, return_exceptions=True)
-    logger.info("Все задачи завершены. Выход.")
-    sys.exit(0)
+def start_polling():
+    logger.info("Запуск polling...")
+    bot.infinity_polling()
 
-async def main():
-    await on_startup()
-    register_signals()
-    
-    try:
-        if WEBHOOK_URL:
-            # Режим Webhook (для Render/Heroku)
-            await dp.start_webhook_listen(
-                host="0.0.0.0",
-                port=int(os.getenv("PORT", 8000)),
-                path="/webhook",
-                bot=bot,
-                allowed_updates=dp.resolve_used_update_types(),
-            )
-        else:
-            # Режим Polling (для локальной разработки)
-            logger.info("Запуск в режиме Polling...")
-            await dp.start_polling(bot)
-    except asyncio.CancelledError:
-        pass # Ожидаемое поведение при остановке
-    finally:
-        await on_shutdown()
+# --- ГЛАВНЫЙ ЗАПУСК ---
 
 if __name__ == "__main__":
+    logger.info("Бот запускается...")
     try:
-        asyncio.run(main())
+        if WEBHOOK_URL:
+            start_webhook()
+        else:
+            start_polling()
     except KeyboardInterrupt:
-        pass
+        logger.info("Остановка...")
+        bot.stop_polling()
