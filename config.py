@@ -5,7 +5,7 @@ import os
 
 # ================= API НАСТРОЙКИ =================
 TG_TOKEN = os.environ.get("TG_TOKEN")
-NEURO_KEY = os.environ.get("NEURO_KEY")
+NEURO_KEY = os.environ.get("sk-8PFufYI4Z9W7DRO3S9LhbHOZJKbgb8QZ9WZtjJPneOP5eaW5")
 MODEL_NAME = "gemini-2.5-flash-lite"
 
 # ================= ПРОМПТ ДЛЯ ЭКЗЕГЕТИКИ =================
