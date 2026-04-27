@@ -55,3 +55,4 @@ BIBLE_BOOKS = [
 ]
 
 COOLDOWN_SECONDS = int(os.getenv("COOLDOWN_SECONDS", "30"))
+main.py
