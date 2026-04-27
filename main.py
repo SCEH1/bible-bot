@@ -97,7 +97,13 @@ def do_parse(chat_id, verse_text):
                         {"role": "user", "content": verse_text}
                     ],
                     "temperature": 0.7,
-                    "max_tokens": 4000
+                    "max_tokens": 4000,
+                    "safety_settings": [
+                        {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+                        {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+                        {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+                        {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
+                    ]
                 },
                 timeout=50
             )
@@ -116,7 +122,18 @@ def do_parse(chat_id, verse_text):
                 logger.info("✅ Разбор готов")
                 return True
             else:
-                logger.warning(f"API {response.status_code}")
+                error_msg = f"❌ Ошибка API: Status {response.status_code}\n{response.text}"
+                logger.warning(error_msg)
+                # Если это последняя попытка, отправим ошибку пользователю
+                if attempt == 2:
+                    if chat_id in pending_messages:
+                        try:
+                            bot.delete_message(chat_id, pending_messages[chat_id])
+                        except:
+                            pass
+                        del pending_messages[chat_id]
+                    bot.send_message(chat_id, error_msg, reply_markup=get_main_keyboard())
+                    return False
                 
         except Exception as e:
             logger.error(f"Попытка {attempt + 1}: {e}")
