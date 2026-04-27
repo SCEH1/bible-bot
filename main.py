@@ -112,13 +112,7 @@ def do_parse(chat_id, verse_text):
                         {"role": "user", "content": full_prompt}
                     ],
                     "temperature": 0.7,
-                    "max_tokens": 4000,
-                    "safety_settings": [
-                        {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-                        {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-                        {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-                        {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
-                    ]
+                    "max_tokens": 4000
                 },
                 timeout=50
             )
