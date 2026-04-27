@@ -100,14 +100,16 @@ def do_parse(chat_id, verse_text):
                 "Content-Type": "application/json"
             }
             
+            # Объединяем промпт и текст, чтобы ИИ не мог его игнорировать
+            full_prompt = f"{SYSTEM_PROMPT}\n\nРАЗОБРАТЬ ТЕКСТ:\n{verse_text}"
+            
             response = requests.post(
                 "https://neuroapi.host/v1/chat/completions",
                 headers=headers,
                 json={
                     "model": MODEL_NAME,
                     "messages": [
-                        {"role": "system", "content": SYSTEM_PROMPT},
-                        {"role": "user", "content": verse_text}
+                        {"role": "user", "content": full_prompt}
                     ],
                     "temperature": 0.7,
                     "max_tokens": 4000,
