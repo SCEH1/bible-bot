@@ -16,7 +16,11 @@ import threading
 
 # ✅ ИМПОРТЫ ИЗ НАШИХ МОДУЛЕЙ
 from config import TG_TOKEN, NEURO_KEY, MODEL_NAME, SYSTEM_PROMPT, BIBLE_BOOKS, COOLDOWN_SECONDS
-from bible_data import POPULAR_VERSES
+try:
+    from bible_data import POPULAR_VERSES, VERSE_THEMES
+except ImportError:
+    from bible_data import POPULAR_VERSES
+    VERSE_THEMES = {}
 
 # ================= НАСТРОЙКА ЛОГИРОВАНИЯ =================
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -40,6 +44,34 @@ def get_random_verse():
     text = POPULAR_VERSES[key]
     logger.info(f"📖 Стих: {key}")
     return f"{key}\n\n{text}"
+
+
+def get_theme_keyboard():
+    """Инлайн-клавиатура тем"""
+    markup = types.InlineKeyboardMarkup()
+    for idx, theme_name in enumerate(VERSE_THEMES.keys(), start=1):
+        markup.row(types.InlineKeyboardButton(theme_name, callback_data=f"theme:{idx}"))
+    return markup
+
+
+def get_theme_name_by_idx(idx):
+    keys = list(VERSE_THEMES.keys())
+    if 0 <= idx < len(keys):
+        return keys[idx]
+    return None
+
+
+def get_random_verse_from_theme(theme_name):
+    refs = VERSE_THEMES.get(theme_name, [])
+    if not refs:
+        return None
+
+    ref = random.choice(refs)
+    text = POPULAR_VERSES.get(ref)
+    if not text:
+        return None
+    return f"{ref}\n\n{text}"
+
 
 def send_smart_split(chat_id, text):
     """Умная разбивка длинных сообщений"""
@@ -70,11 +102,21 @@ def send_smart_split(chat_id, text):
         logger.info(f"Часть {i}/{len(parts)}")
         time.sleep(0.3)
 
+
 def get_main_keyboard():
     """Главная клавиатура"""
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    markup.add(types.KeyboardButton("📖 Стих дня"))
+    markup.add(types.KeyboardButton("📖 Стих дня"), types.KeyboardButton("📚 По теме"))
     return markup
+
+
+def get_post_parse_keyboard():
+    """CTA после разбора"""
+    markup = types.InlineKeyboardMarkup()
+    markup.row(types.InlineKeyboardButton("🎲 Другой стих", callback_data="new"))
+    markup.row(types.InlineKeyboardButton("📚 Выбрать тему", callback_data="choose_theme"))
+    return markup
+
 
 def is_bible_reference(text):
     """Проверка библейской ссылки"""
@@ -84,6 +126,7 @@ def is_bible_reference(text):
     is_long = len(text) >= 50
     return has_reference or is_long
 
+
 def is_on_cooldown(chat_id):
     """Проверка cooldown для пользователя"""
     now = time.time()
@@ -92,9 +135,11 @@ def is_on_cooldown(chat_id):
     remaining = int(max(0, COOLDOWN_SECONDS - elapsed))
     return remaining > 0, remaining
 
+
 def mark_request(chat_id):
     """Отмечаем время последнего запроса"""
     last_request_time[chat_id] = time.time()
+
 
 def do_parse(chat_id, verse_text):
     """✅ Универсальная функция разбора"""
@@ -102,7 +147,6 @@ def do_parse(chat_id, verse_text):
     pending_messages[chat_id] = msg.message_id
     bot.send_chat_action(chat_id, 'typing')
 
-    # Проверка ключа (только для логов Render, маскируем)
     if NEURO_KEY:
         masked_key = f"{NEURO_KEY[:4]}...{NEURO_KEY[-4:]}"
     else:
@@ -133,8 +177,6 @@ def do_parse(chat_id, verse_text):
 
             if response.status_code == 200:
                 ans = response.json()['choices'][0]['message']['content'].strip()
-
-                # Авто-исправление: безопасно заменяем **текст** на <b>текст</b>
                 ans = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', ans, flags=re.DOTALL)
 
                 if chat_id in pending_messages:
@@ -145,6 +187,7 @@ def do_parse(chat_id, verse_text):
                     del pending_messages[chat_id]
 
                 send_smart_split(chat_id, ans)
+                bot.send_message(chat_id, "Что дальше?", reply_markup=get_post_parse_keyboard())
                 logger.info("✅ Разбор готов")
                 return True
             else:
@@ -181,6 +224,7 @@ def do_parse(chat_id, verse_text):
 
     return False
 
+
 def parse_in_background(chat_id, verse_text):
     """Фоновый запуск разбора с ограничением по количеству задач"""
     try:
@@ -194,9 +238,10 @@ def parse_in_background(chat_id, verse_text):
             reply_markup=get_main_keyboard()
         )
 
+
 # ================= ОБРАБОТЧИКИ =================
 
-@bot.message_handler(commands=['start'])
+@bot.message_handler(commands=['start', 'help'])
 def welcome(message):
     markup = get_main_keyboard()
     bot.send_message(
@@ -205,11 +250,13 @@ def welcome(message):
         "<i>Что можно:</i>\n"
         "• <b>Римлянам 5:1</b> - ссылка на стих\n"
         "• <b>📖 Стих дня</b> - случайный стих из 220+\n"
+        "• <b>📚 По теме</b> - стихи по темам\n"
         "• Полный текст стиха для разбора",
         parse_mode='HTML',
         reply_markup=markup
     )
     logger.info(f"Новый пользователь: {message.chat.id}")
+
 
 @bot.message_handler(func=lambda message: True)
 def handle_message(message):
@@ -225,12 +272,26 @@ def handle_message(message):
         markup = types.InlineKeyboardMarkup()
         markup.row(types.InlineKeyboardButton("🔍 Разобрать", callback_data="parse"))
         markup.row(types.InlineKeyboardButton("🎲 Другой стих", callback_data="new"))
+        markup.row(types.InlineKeyboardButton("📚 Выбрать тему", callback_data="choose_theme"))
 
         bot.send_message(
             chat_id,
             f"📖 <b>Стих дня:</b>\n\n{verse}",
             parse_mode='HTML',
             reply_markup=markup
+        )
+        return
+
+    if text == "📚 По теме":
+        if not VERSE_THEMES:
+            bot.send_message(chat_id, "⚠️ Темы пока не настроены в bible_data.py", reply_markup=get_main_keyboard())
+            return
+
+        bot.send_message(
+            chat_id,
+            "📚 <b>Выбери тему:</b>",
+            parse_mode='HTML',
+            reply_markup=get_theme_keyboard()
         )
         return
 
@@ -257,13 +318,8 @@ def handle_message(message):
         return
 
     mark_request(chat_id)
+    threading.Thread(target=parse_in_background, args=(chat_id, text), daemon=True).start()
 
-    # Запускаем разбор в фоне, не блокируя webhook/обработчик
-    threading.Thread(
-        target=parse_in_background,
-        args=(chat_id, text),
-        daemon=True
-    ).start()
 
 @bot.callback_query_handler(func=lambda call: True)
 def callback_handler(call):
@@ -277,6 +333,7 @@ def callback_handler(call):
         markup = types.InlineKeyboardMarkup()
         markup.row(types.InlineKeyboardButton("🔍 Разобрать", callback_data="parse"))
         markup.row(types.InlineKeyboardButton("🎲 Другой стих", callback_data="new"))
+        markup.row(types.InlineKeyboardButton("📚 Выбрать тему", callback_data="choose_theme"))
 
         try:
             bot.edit_message_text(
@@ -288,6 +345,47 @@ def callback_handler(call):
             )
         except Exception as e:
             logger.error(f"Ошибка edit: {e}")
+
+    elif call.data == "choose_theme":
+        if not VERSE_THEMES:
+            bot.send_message(chat_id, "⚠️ Темы пока не настроены в bible_data.py", reply_markup=get_main_keyboard())
+            return
+        bot.send_message(
+            chat_id,
+            "📚 <b>Выбери тему:</b>",
+            parse_mode='HTML',
+            reply_markup=get_theme_keyboard()
+        )
+
+    elif call.data.startswith("theme:"):
+        try:
+            idx = int(call.data.split(":", 1)[1]) - 1
+        except ValueError:
+            bot.send_message(chat_id, "❌ Не удалось определить тему")
+            return
+
+        theme_name = get_theme_name_by_idx(idx)
+        if not theme_name:
+            bot.send_message(chat_id, "❌ Тема не найдена")
+            return
+
+        verse = get_random_verse_from_theme(theme_name)
+        if not verse:
+            bot.send_message(chat_id, f"⚠️ В теме «{theme_name}» нет валидных стихов", reply_markup=get_main_keyboard())
+            return
+
+        last_verse[chat_id] = verse
+        markup = types.InlineKeyboardMarkup()
+        markup.row(types.InlineKeyboardButton("🔍 Разобрать", callback_data="parse"))
+        markup.row(types.InlineKeyboardButton("🎲 Ещё стих", callback_data=f"theme:{idx + 1}"))
+        markup.row(types.InlineKeyboardButton("📚 Выбрать тему", callback_data="choose_theme"))
+
+        bot.send_message(
+            chat_id,
+            f"📚 <b>{theme_name}</b>\n\n{verse}",
+            parse_mode='HTML',
+            reply_markup=markup
+        )
 
     elif call.data == "parse":
         if chat_id in last_verse:
@@ -301,14 +399,10 @@ def callback_handler(call):
                 return
 
             mark_request(chat_id)
-
-            threading.Thread(
-                target=parse_in_background,
-                args=(chat_id, last_verse[chat_id]),
-                daemon=True
-            ).start()
+            threading.Thread(target=parse_in_background, args=(chat_id, last_verse[chat_id]), daemon=True).start()
         else:
             bot.send_message(chat_id, "❌ Стих не найден. Нажми <b>📖 Стих дня</b>", parse_mode='HTML')
+
 
 # ================= FLASK WEBHOOK =================
 
@@ -340,6 +434,6 @@ if __name__ == "__main__":
     WEBHOOK_URL = f"https://bible-bot-ssx4.onrender.com/{TG_TOKEN}"
     bot.set_webhook(url=WEBHOOK_URL)
     logger.info(f"🚀 Webhook: {WEBHOOK_URL}")
-    logger.info(f"📚 База: {len(POPULAR_VERSES)} стихов")
+    logger.info(f"📚 База: {len(POPULAR_VERSES)} стихов | Тем: {len(VERSE_THEMES)}")
 
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
