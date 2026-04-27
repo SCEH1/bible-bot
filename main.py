@@ -126,21 +126,8 @@ def do_parse(chat_id, verse_text):
             if response.status_code == 200:
                 ans = response.json()['choices'][0]['message']['content'].strip()
                 
-                # Авто-исправление: заменяем ** на <b> для Telegram
-                ans = ans.replace("**", "<b>")
-                # Если в тексте нечетное количество <b>, Telegram выдаст ошибку, 
-                # поэтому мы закрываем теги (простая логика замены)
-                count = 0
-                final_ans = ""
-                for part in ans.split("<b>"):
-                    if count == 0:
-                        final_ans += part
-                    elif count % 2 == 1:
-                        final_ans += "<b>" + part
-                    else:
-                        final_ans += "</b>" + part
-                    count += 1
-                ans = final_ans
+                # Авто-исправление: безопасно заменяем **текст** на <b>текст</b>
+                ans = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', ans, flags=re.DOTALL)
 
                 if chat_id in pending_messages:
                     try:
@@ -168,6 +155,14 @@ def do_parse(chat_id, verse_text):
                 
         except Exception as e:
             logger.error(f"Попытка {attempt + 1}: {e}")
+            if attempt == 2:
+                if chat_id in pending_messages:
+                    try:
+                        bot.delete_message(chat_id, pending_messages[chat_id])
+                    except:
+                        pass
+                    del pending_messages[chat_id]
+                bot.send_message(chat_id, "❌ Произошла ошибка при обработке ответа. Попробуй другой стих!", reply_markup=get_main_keyboard())
         
         if attempt < 2:
             time.sleep(2 ** attempt)
