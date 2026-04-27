@@ -12,6 +12,7 @@ import os
 from collections import deque
 from flask import Flask, request
 import re
+import threading
 
 # ✅ ИМПОРТЫ ИЗ НАШИХ МОДУЛЕЙ
 from config import TG_TOKEN, NEURO_KEY, MODEL_NAME, SYSTEM_PROMPT, BIBLE_BOOKS
@@ -26,6 +27,9 @@ bot = telebot.TeleBot(TG_TOKEN)
 processed_updates = deque(maxlen=1000)
 pending_messages = {}
 last_verse = {}
+
+# Лимит одновременных фоновых разборов
+parse_semaphore = threading.Semaphore(3)
 
 # ================= ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ =================
 
@@ -164,6 +168,19 @@ def do_parse(chat_id, verse_text):
 
     return False
 
+def parse_in_background(chat_id, verse_text):
+    """Фоновый запуск разбора с ограничением по количеству задач"""
+    try:
+        with parse_semaphore:
+            do_parse(chat_id, verse_text)
+    except Exception as e:
+        logger.exception(f"Ошибка фонового разбора для {chat_id}: {e}")
+        bot.send_message(
+            chat_id,
+            "❌ Ошибка при разборе. Попробуй ещё раз.",
+            reply_markup=get_main_keyboard()
+        )
+
 # ================= ОБРАБОТЧИКИ =================
 
 @bot.message_handler(commands=['start'])
@@ -217,7 +234,12 @@ def handle_message(message):
         )
         return
 
-    do_parse(chat_id, text)
+    # Запускаем разбор в фоне, не блокируя webhook/обработчик
+    threading.Thread(
+        target=parse_in_background,
+        args=(chat_id, text),
+        daemon=True
+    ).start()
 
 @bot.callback_query_handler(func=lambda call: True)
 def callback_handler(call):
@@ -245,7 +267,11 @@ def callback_handler(call):
 
     elif call.data == "parse":
         if chat_id in last_verse:
-            do_parse(chat_id, last_verse[chat_id])
+            threading.Thread(
+                target=parse_in_background,
+                args=(chat_id, last_verse[chat_id]),
+                daemon=True
+            ).start()
         else:
             bot.send_message(chat_id, "❌ Стих не найден. Нажми <b>📖 Стих дня</b>", parse_mode='HTML')
 
