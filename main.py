@@ -15,7 +15,7 @@ import re
 import threading
 
 # ✅ ИМПОРТЫ ИЗ НАШИХ МОДУЛЕЙ
-from config import TG_TOKEN, NEURO_KEY, MODEL_NAME, SYSTEM_PROMPT, BIBLE_BOOKS
+from config import TG_TOKEN, NEURO_KEY, MODEL_NAME, SYSTEM_PROMPT, BIBLE_BOOKS, COOLDOWN_SECONDS
 from bible_data import POPULAR_VERSES
 
 # ================= НАСТРОЙКА ЛОГИРОВАНИЯ =================
@@ -27,6 +27,7 @@ bot = telebot.TeleBot(TG_TOKEN)
 processed_updates = deque(maxlen=1000)
 pending_messages = {}
 last_verse = {}
+last_request_time = {}
 
 # Лимит одновременных фоновых разборов
 parse_semaphore = threading.Semaphore(3)
@@ -82,6 +83,18 @@ def is_bible_reference(text):
     has_reference = bool(re.search(bible_pattern, text_lower))
     is_long = len(text) >= 50
     return has_reference or is_long
+
+def is_on_cooldown(chat_id):
+    """Проверка cooldown для пользователя"""
+    now = time.time()
+    last_time = last_request_time.get(chat_id, 0)
+    elapsed = now - last_time
+    remaining = int(max(0, COOLDOWN_SECONDS - elapsed))
+    return remaining > 0, remaining
+
+def mark_request(chat_id):
+    """Отмечаем время последнего запроса"""
+    last_request_time[chat_id] = time.time()
 
 def do_parse(chat_id, verse_text):
     """✅ Универсальная функция разбора"""
@@ -234,6 +247,17 @@ def handle_message(message):
         )
         return
 
+    on_cooldown, remaining = is_on_cooldown(chat_id)
+    if on_cooldown:
+        bot.send_message(
+            chat_id,
+            f"⏳ Подожди {remaining} сек. перед следующим разбором.",
+            reply_markup=get_main_keyboard()
+        )
+        return
+
+    mark_request(chat_id)
+
     # Запускаем разбор в фоне, не блокируя webhook/обработчик
     threading.Thread(
         target=parse_in_background,
@@ -267,6 +291,17 @@ def callback_handler(call):
 
     elif call.data == "parse":
         if chat_id in last_verse:
+            on_cooldown, remaining = is_on_cooldown(chat_id)
+            if on_cooldown:
+                bot.send_message(
+                    chat_id,
+                    f"⏳ Подожди {remaining} сек. перед следующим разбором.",
+                    reply_markup=get_main_keyboard()
+                )
+                return
+
+            mark_request(chat_id)
+
             threading.Thread(
                 target=parse_in_background,
                 args=(chat_id, last_verse[chat_id]),
