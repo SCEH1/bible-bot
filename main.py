@@ -89,7 +89,10 @@ def do_parse(chat_id, verse_text):
         try:
             response = requests.post(
                 "https://neuroapi.host/v1/chat/completions",
-                headers={"Authorization": f"Bearer {NEURO_KEY}"},
+                headers={
+                    "Authorization": f"Bearer {NEURO_KEY.strip()}",
+                    "Content-Type": "application/json"
+                },
                 json={
                     "model": MODEL_NAME,
                     "messages": [
