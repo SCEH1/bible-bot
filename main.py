@@ -85,14 +85,24 @@ def do_parse(chat_id, verse_text):
     pending_messages[chat_id] = msg.message_id
     bot.send_chat_action(chat_id, 'typing')
     
+    # Проверка ключа (только для логов Render, маскируем)
+    if NEURO_KEY:
+        masked_key = f"{NEURO_KEY[:4]}...{NEURO_KEY[-4:]}"
+    else:
+        masked_key = "None"
+    logger.info(f"🔑 Использую ключ: {masked_key}")
+
     for attempt in range(3):
         try:
+            # Пробуем стандартный заголовок
+            headers = {
+                "Authorization": f"Bearer {NEURO_KEY.strip()}",
+                "Content-Type": "application/json"
+            }
+            
             response = requests.post(
                 "https://neuroapi.host/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {NEURO_KEY.strip()}",
-                    "Content-Type": "application/json"
-                },
+                headers=headers,
                 json={
                     "model": MODEL_NAME,
                     "messages": [
@@ -144,14 +154,6 @@ def do_parse(chat_id, verse_text):
         if attempt < 2:
             time.sleep(2 ** attempt)
     
-    if chat_id in pending_messages:
-        try:
-            bot.delete_message(chat_id, pending_messages[chat_id])
-        except:
-            pass
-        del pending_messages[chat_id]
-    
-    bot.send_message(chat_id, "❌ Ошибка разбора. Попробуй позже!", reply_markup=get_main_keyboard())
     return False
 
 # ================= ОБРАБОТЧИКИ =================
