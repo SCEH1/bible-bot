@@ -607,3 +607,4 @@ if __name__ == "__main__":
     logger.info(f"📚 База: {len(POPULAR_VERSES)} стихов | Тем: {len(VERSE_THEMES)}")
 
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
+storage.py
