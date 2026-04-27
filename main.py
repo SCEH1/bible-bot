@@ -141,6 +141,57 @@ def mark_request(chat_id):
     last_request_time[chat_id] = time.time()
 
 
+def format_ai_answer(raw_text):
+    """
+    Приводит ответ ИИ к аккуратному виду для Telegram (HTML):
+    - убирает markdown-заголовки вида ###;
+    - сохраняет акценты через <b>...</b>;
+    - нормализует пустые строки.
+    """
+    text = raw_text.strip()
+
+    # Markdown bold -> HTML bold
+    text = re.sub(r"\*\*(.*?)\*\*", r"<b>\1</b>", text, flags=re.DOTALL)
+
+    # Markdown headings (### Заголовок) -> HTML bold
+    text = re.sub(r"(?m)^\s*#{1,6}\s*(.+?)\s*$", r"<b>\1</b>", text)
+
+    # Нормализация заголовков в формат из 8 пунктов
+    heading_variants = [
+        (r"контекст\s+и\s+авторств", "🌟 1. КОНТЕКСТ И АВТОРСТВО"),
+        (r"жанр\s+и\s+стил", "🕊️ 2. ЖАНР И СТИЛЬ"),
+        (r"ключев\w*\s+слов\w*\s+и\s+фраз", "✨ 3. КЛЮЧЕВЫЕ СЛОВА И ФРАЗЫ"),
+        (r"теологи\w*\s+и\s+основн\w*\s+тем", "🚶‍♀️ 4. ТЕОЛОГИЯ И ОСНОВНЫЕ ТЕМЫ"),
+        (r"историко[-\s]?культурн\w*\s+фон", "💖 5. ИСТОРИКО-КУЛЬТУРНЫЙ ФОН"),
+        (r"грамматик\w*\s+и\s+синтаксис", "🌟 6. ГРАММАТИКА И СИНТАКСИС"),
+        (r"применени\w*\s+и\s+актуальност", "💪 7. ПРИМЕНЕНИЕ И АКТУАЛЬНОСТЬ"),
+        (r"духовн\w*\s+размышлен", "📖 8. ДУХОВНОЕ РАЗМЫШЛЕНИЕ"),
+    ]
+
+    for variant, canonical in heading_variants:
+        pattern = rf"(?im)^\s*(?:<b>)?(?:[^\w\n]*\d+[.)]\s*)?{variant}\s*:?(?:</b>)?\s*$"
+        text = re.sub(pattern, f"<b>{canonical}</b>", text)
+
+    # Если ИИ пропустил нумерацию, дожимаем 8-пунктный формат для строк "1. ...", "2. ..."
+    numbered_map = {
+        "1": "<b>🌟 1. КОНТЕКСТ И АВТОРСТВО</b>",
+        "2": "<b>🕊️ 2. ЖАНР И СТИЛЬ</b>",
+        "3": "<b>✨ 3. КЛЮЧЕВЫЕ СЛОВА И ФРАЗЫ</b>",
+        "4": "<b>🚶‍♀️ 4. ТЕОЛОГИЯ И ОСНОВНЫЕ ТЕМЫ</b>",
+        "5": "<b>💖 5. ИСТОРИКО-КУЛЬТУРНЫЙ ФОН</b>",
+        "6": "<b>🌟 6. ГРАММАТИКА И СИНТАКСИС</b>",
+        "7": "<b>💪 7. ПРИМЕНЕНИЕ И АКТУАЛЬНОСТЬ</b>",
+        "8": "<b>📖 8. ДУХОВНОЕ РАЗМЫШЛЕНИЕ</b>",
+    }
+    for num, replacement in numbered_map.items():
+        text = re.sub(rf"(?m)^\s*{num}[.)]\s+.+$", replacement, text)
+
+    # Лишние пустые строки
+    text = re.sub(r"\n{3,}", "\n\n", text)
+
+    return text
+
+
 def do_parse(chat_id, verse_text):
     """✅ Универсальная функция разбора"""
     msg = bot.send_message(chat_id, "🔍 <b>Делаю разбор...</b>", parse_mode='HTML')
@@ -170,14 +221,14 @@ def do_parse(chat_id, verse_text):
                         {"role": "user", "content": verse_text}
                     ],
                     "temperature": 0.7,
-                    "max_tokens": 4000
+                    "max_tokens": 2200
                 },
                 timeout=50
             )
 
             if response.status_code == 200:
                 ans = response.json()['choices'][0]['message']['content'].strip()
-                ans = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', ans, flags=re.DOTALL)
+                ans = format_ai_answer(ans)
 
                 if chat_id in pending_messages:
                     try:
