@@ -21,6 +21,7 @@ try:
 except ImportError:
     from bible_data import POPULAR_VERSES
     VERSE_THEMES = {}
+from storage import add_favorite, get_favorites, remove_favorite
 
 # ================= НАСТРОЙКА ЛОГИРОВАНИЯ =================
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -113,6 +114,16 @@ def get_main_keyboard():
 def get_post_parse_keyboard():
     """CTA после разбора"""
     markup = types.InlineKeyboardMarkup()
+    markup.row(types.InlineKeyboardButton("🎲 Другой стих", callback_data="new"))
+    markup.row(types.InlineKeyboardButton("📚 Выбрать тему", callback_data="choose_theme"))
+    return markup
+
+
+def get_verse_actions_keyboard():
+    """Кнопки для стиха до разбора"""
+    markup = types.InlineKeyboardMarkup()
+    markup.row(types.InlineKeyboardButton("🔍 Разобрать", callback_data="parse"))
+    markup.row(types.InlineKeyboardButton("⭐ Сохранить стих", callback_data="fav_save"))
     markup.row(types.InlineKeyboardButton("🎲 Другой стих", callback_data="new"))
     markup.row(types.InlineKeyboardButton("📚 Выбрать тему", callback_data="choose_theme"))
     return markup
@@ -290,6 +301,33 @@ def parse_in_background(chat_id, verse_text):
         )
 
 
+def extract_verse_ref(verse_text):
+    """Из 'Ссылка\\n\\nТекст' возвращает только ссылку."""
+    if not verse_text:
+        return None
+    first_line = verse_text.split("\n", 1)[0].strip()
+    return first_line if first_line else None
+
+
+def send_favorites_list(chat_id):
+    favorites = get_favorites(chat_id)
+    if not favorites:
+        bot.send_message(chat_id, "⭐ У тебя пока нет избранных стихов.")
+        return
+
+    markup = types.InlineKeyboardMarkup()
+    lines = ["⭐ <b>Твои избранные стихи:</b>"]
+
+    for idx, verse_ref in enumerate(favorites, start=1):
+        lines.append(f"{idx}. {verse_ref}")
+        markup.row(
+            types.InlineKeyboardButton(f"🔍 Разобрать {idx}", callback_data=f"fav_parse:{idx}"),
+            types.InlineKeyboardButton(f"🗑 Удалить {idx}", callback_data=f"fav_del:{idx}")
+        )
+
+    bot.send_message(chat_id, "\n".join(lines), parse_mode='HTML', reply_markup=markup)
+
+
 # ================= ОБРАБОТЧИКИ =================
 
 @bot.message_handler(commands=['start', 'help'])
@@ -302,11 +340,34 @@ def welcome(message):
         "• <b>Римлянам 5:1</b> - ссылка на стих\n"
         "• <b>📖 Стих дня</b> - случайный стих из 220+\n"
         "• <b>📚 По теме</b> - стихи по темам\n"
+        "• <b>/favorite</b> - сохранить текущий стих\n"
+        "• <b>/myfavorites</b> - открыть избранное\n"
         "• Полный текст стиха для разбора",
         parse_mode='HTML',
         reply_markup=markup
     )
     logger.info(f"Новый пользователь: {message.chat.id}")
+
+
+@bot.message_handler(commands=['favorite'])
+def favorite_command(message):
+    chat_id = message.chat.id
+    verse = last_verse.get(chat_id)
+    verse_ref = extract_verse_ref(verse)
+
+    if not verse_ref:
+        bot.send_message(chat_id, "Сначала выбери стих через 📖 Стих дня или 📚 По теме.")
+        return
+
+    if add_favorite(chat_id, verse_ref):
+        bot.send_message(chat_id, f"⭐ Добавлено в избранное: <b>{verse_ref}</b>", parse_mode='HTML')
+    else:
+        bot.send_message(chat_id, f"ℹ️ Уже в избранном: <b>{verse_ref}</b>", parse_mode='HTML')
+
+
+@bot.message_handler(commands=['myfavorites'])
+def myfavorites_command(message):
+    send_favorites_list(message.chat.id)
 
 
 @bot.message_handler(func=lambda message: True)
@@ -320,16 +381,11 @@ def handle_message(message):
         verse = get_random_verse()
         last_verse[chat_id] = verse
 
-        markup = types.InlineKeyboardMarkup()
-        markup.row(types.InlineKeyboardButton("🔍 Разобрать", callback_data="parse"))
-        markup.row(types.InlineKeyboardButton("🎲 Другой стих", callback_data="new"))
-        markup.row(types.InlineKeyboardButton("📚 Выбрать тему", callback_data="choose_theme"))
-
         bot.send_message(
             chat_id,
             f"📖 <b>Стих дня:</b>\n\n{verse}",
             parse_mode='HTML',
-            reply_markup=markup
+            reply_markup=get_verse_actions_keyboard()
         )
         return
 
@@ -381,21 +437,29 @@ def callback_handler(call):
         verse = get_random_verse()
         last_verse[chat_id] = verse
 
-        markup = types.InlineKeyboardMarkup()
-        markup.row(types.InlineKeyboardButton("🔍 Разобрать", callback_data="parse"))
-        markup.row(types.InlineKeyboardButton("🎲 Другой стих", callback_data="new"))
-        markup.row(types.InlineKeyboardButton("📚 Выбрать тему", callback_data="choose_theme"))
-
         try:
             bot.edit_message_text(
                 f"📖 <b>Стих дня:</b>\n\n{verse}",
                 chat_id,
                 call.message.message_id,
                 parse_mode='HTML',
-                reply_markup=markup
+                reply_markup=get_verse_actions_keyboard()
             )
         except Exception as e:
             logger.error(f"Ошибка edit: {e}")
+
+    elif call.data == "fav_save":
+        verse = last_verse.get(chat_id)
+        verse_ref = extract_verse_ref(verse)
+
+        if not verse_ref:
+            bot.send_message(chat_id, "❌ Не удалось определить стих для сохранения.")
+            return
+
+        if add_favorite(chat_id, verse_ref):
+            bot.send_message(chat_id, f"⭐ Стих сохранён: <b>{verse_ref}</b>", parse_mode='HTML')
+        else:
+            bot.send_message(chat_id, f"ℹ️ Уже в избранном: <b>{verse_ref}</b>", parse_mode='HTML')
 
     elif call.data == "choose_theme":
         if not VERSE_THEMES:
@@ -428,6 +492,7 @@ def callback_handler(call):
         last_verse[chat_id] = verse
         markup = types.InlineKeyboardMarkup()
         markup.row(types.InlineKeyboardButton("🔍 Разобрать", callback_data="parse"))
+        markup.row(types.InlineKeyboardButton("⭐ Сохранить стих", callback_data="fav_save"))
         markup.row(types.InlineKeyboardButton("🎲 Ещё стих", callback_data=f"theme:{idx + 1}"))
         markup.row(types.InlineKeyboardButton("📚 Выбрать тему", callback_data="choose_theme"))
 
@@ -453,6 +518,54 @@ def callback_handler(call):
             threading.Thread(target=parse_in_background, args=(chat_id, last_verse[chat_id]), daemon=True).start()
         else:
             bot.send_message(chat_id, "❌ Стих не найден. Нажми <b>📖 Стих дня</b>", parse_mode='HTML')
+
+    elif call.data.startswith("fav_parse:"):
+        try:
+            idx = int(call.data.split(":", 1)[1]) - 1
+        except ValueError:
+            bot.send_message(chat_id, "❌ Неверный номер избранного стиха.")
+            return
+
+        favorites = get_favorites(chat_id)
+        if idx < 0 or idx >= len(favorites):
+            bot.send_message(chat_id, "❌ Избранный стих не найден.")
+            return
+
+        verse_ref = favorites[idx]
+        verse_text = POPULAR_VERSES.get(verse_ref)
+        if not verse_text:
+            bot.send_message(chat_id, f"⚠️ В базе нет текста для <b>{verse_ref}</b>.", parse_mode='HTML')
+            return
+
+        last_verse[chat_id] = f"{verse_ref}\n\n{verse_text}"
+        on_cooldown, remaining = is_on_cooldown(chat_id)
+        if on_cooldown:
+            bot.send_message(chat_id, f"⏳ Подожди {remaining} сек. перед следующим разбором.")
+            return
+
+        mark_request(chat_id)
+        threading.Thread(target=parse_in_background, args=(chat_id, last_verse[chat_id]), daemon=True).start()
+
+    elif call.data.startswith("fav_del:"):
+        try:
+            idx = int(call.data.split(":", 1)[1]) - 1
+        except ValueError:
+            bot.send_message(chat_id, "❌ Неверный номер избранного стиха.")
+            return
+
+        favorites = get_favorites(chat_id)
+        if idx < 0 or idx >= len(favorites):
+            bot.send_message(chat_id, "❌ Избранный стих не найден.")
+            return
+
+        verse_ref = favorites[idx]
+        removed = remove_favorite(chat_id, verse_ref)
+        if removed:
+            bot.send_message(chat_id, f"🗑 Удалено из избранного: <b>{verse_ref}</b>", parse_mode='HTML')
+        else:
+            bot.send_message(chat_id, "ℹ️ Этот стих уже удалён.")
+
+        send_favorites_list(chat_id)
 
 
 # ================= FLASK WEBHOOK =================
