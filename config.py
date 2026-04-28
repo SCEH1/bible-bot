@@ -8,8 +8,9 @@ import os
 TG_TOKEN = os.getenv("TG_TOKEN", "").strip()
 NEURO_KEY = os.getenv("NEURO_KEY", "").strip()
 
-# ================= МОДЕЛЬ =================
+# ================= МОДЕЛЬ / API =================
 MODEL_NAME = os.getenv("MODEL_NAME", "openai/gpt-4o-mini")
+AI_BASE_URL = os.getenv("AI_BASE_URL", "https://neuroapi.host/v1").strip()
 
 # ================= SYSTEM PROMPT =================
 SYSTEM_PROMPT = """
@@ -55,4 +56,3 @@ BIBLE_BOOKS = [
 ]
 
 COOLDOWN_SECONDS = int(os.getenv("COOLDOWN_SECONDS", "30"))
-main.py
