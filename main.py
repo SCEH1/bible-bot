@@ -15,7 +15,15 @@ import re
 import threading
 
 # ✅ ИМПОРТЫ ИЗ НАШИХ МОДУЛЕЙ
-from config import TG_TOKEN, NEURO_KEY, MODEL_NAME, SYSTEM_PROMPT, BIBLE_BOOKS, COOLDOWN_SECONDS
+from config import (
+    TG_TOKEN,
+    NEURO_KEY,
+    MODEL_NAME,
+    SYSTEM_PROMPT,
+    BIBLE_BOOKS,
+    COOLDOWN_SECONDS,
+    AI_BASE_URL,
+)
 try:
     from bible_data import POPULAR_VERSES, VERSE_THEMES
 except ImportError:
@@ -40,10 +48,10 @@ parse_semaphore = threading.Semaphore(3)
 # ================= ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ =================
 
 def get_random_verse():
-    """🎲 Случайный стих из базы"""
+    """Случайный стих из базы"""
     key = random.choice(list(POPULAR_VERSES.keys()))
     text = POPULAR_VERSES[key]
-    logger.info(f"📖 Стих: {key}")
+    logger.info(f"Стих: {key}")
     return f"{key}\n\n{text}"
 
 
@@ -205,27 +213,43 @@ def format_ai_answer(raw_text):
 
 
 def do_parse(chat_id, verse_text):
-    """✅ Универсальная функция разбора"""
+    """Универсальная функция разбора"""
     msg = bot.send_message(chat_id, "🔍 <b>Делаю разбор...</b>", parse_mode='HTML')
     pending_messages[chat_id] = msg.message_id
     bot.send_chat_action(chat_id, 'typing')
 
-    if NEURO_KEY:
-        masked_key = f"{NEURO_KEY[:4]}...{NEURO_KEY[-4:]}"
-    else:
-        masked_key = "None"
-    logger.info(f"🔑 Использую ключ: {masked_key}")
+    if not NEURO_KEY:
+        if chat_id in pending_messages:
+            try:
+                bot.delete_message(chat_id, pending_messages[chat_id])
+            except Exception:
+                pass
+            pending_messages.pop(chat_id, None)
+        bot.send_message(chat_id, "❌ Не задан NEURO_KEY в переменных окружения.", reply_markup=get_main_keyboard())
+        return False
+
+    if not AI_BASE_URL or "your-ai-provider.com" in AI_BASE_URL:
+        if chat_id in pending_messages:
+            try:
+                bot.delete_message(chat_id, pending_messages[chat_id])
+            except Exception:
+                pass
+            pending_messages.pop(chat_id, None)
+        bot.send_message(
+            chat_id,
+            "❌ Неверный AI_BASE_URL. Укажи реальный URL, например: https://neuroapi.host/v1",
+            reply_markup=get_main_keyboard()
+        )
+        return False
 
     for attempt in range(3):
         try:
-            headers = {
-                "Authorization": f"Bearer {NEURO_KEY.strip()}",
-                "Content-Type": "application/json"
-            }
-
             response = requests.post(
-                "https://neuroapi.host/v1/chat/completions",
-                headers=headers,
+                f"{AI_BASE_URL.rstrip('/')}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {NEURO_KEY}",
+                    "Content-Type": "application/json"
+                },
                 json={
                     "model": MODEL_NAME,
                     "messages": [
@@ -247,11 +271,11 @@ def do_parse(chat_id, verse_text):
                         bot.delete_message(chat_id, pending_messages[chat_id])
                     except Exception:
                         pass
-                    del pending_messages[chat_id]
+                    pending_messages.pop(chat_id, None)
 
                 send_smart_split(chat_id, ans)
                 bot.send_message(chat_id, "Что дальше?", reply_markup=get_post_parse_keyboard())
-                logger.info("✅ Разбор готов")
+                logger.info("Разбор готов")
                 return True
             else:
                 error_msg = f"❌ Ошибка API: Status {response.status_code}\n{response.text}"
@@ -263,7 +287,7 @@ def do_parse(chat_id, verse_text):
                             bot.delete_message(chat_id, pending_messages[chat_id])
                         except Exception:
                             pass
-                        del pending_messages[chat_id]
+                        pending_messages.pop(chat_id, None)
                     bot.send_message(chat_id, error_msg, reply_markup=get_main_keyboard())
                     return False
 
@@ -275,12 +299,13 @@ def do_parse(chat_id, verse_text):
                         bot.delete_message(chat_id, pending_messages[chat_id])
                     except Exception:
                         pass
-                    del pending_messages[chat_id]
+                    pending_messages.pop(chat_id, None)
                 bot.send_message(
                     chat_id,
-                    "❌ Произошла ошибка при обработке ответа. Попробуй другой стих!",
+                    f"❌ Ошибка соединения с AI: {e}\nПроверь ключ и URL.",
                     reply_markup=get_main_keyboard()
                 )
+                return False
 
         if attempt < 2:
             time.sleep(2 ** attempt)
@@ -375,8 +400,17 @@ def myfavorites_command(message):
 @bot.message_handler(func=lambda message: True)
 def handle_message(message):
     chat_id = message.chat.id
-    text = message.text.strip()
 
+    if not message.text:
+        bot.send_message(
+            chat_id,
+            "📖 Пришли текстовую ссылку на стих, например <b>Иоанна 3:16</b>.",
+            parse_mode='HTML',
+            reply_markup=get_main_keyboard()
+        )
+        return
+
+    text = message.text.strip()
     logger.info(f"Сообщение: '{text[:50]}'")
 
     if text == "📖 Стих дня":
@@ -603,8 +637,7 @@ if __name__ == "__main__":
     bot.remove_webhook()
     WEBHOOK_URL = f"https://bible-bot-ssx4.onrender.com/{TG_TOKEN}"
     bot.set_webhook(url=WEBHOOK_URL)
-    logger.info(f"🚀 Webhook: {WEBHOOK_URL}")
-    logger.info(f"📚 База: {len(POPULAR_VERSES)} стихов | Тем: {len(VERSE_THEMES)}")
+    logger.info(f"Webhook: {WEBHOOK_URL}")
+    logger.info(f"База: {len(POPULAR_VERSES)} стихов | Тем: {len(VERSE_THEMES)}")
 
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
-storage.py
